@@ -37,6 +37,9 @@ import {
   roles,
   sessions,
   stages,
+  taskAutomationRules,
+  taskAutomationRuns,
+  taskTypes,
   tasks,
   users
 } from "../../../db/schema/index.js";
@@ -797,9 +800,14 @@ app.post("/api/leads", makeRequireAuth(MANAGER_UP), async (req, res) => {
       leadNumber
     }, actorFromLocals(res));
 
+    // Run lead_created automation rules
+    const automationTasks = await runAutomationRules(
+      "lead_created", lead.id, null, responsibleId ?? null, actorFromLocals(res)
+    );
+
     const bootstrap = await getBootstrap();
     const createdLead = bootstrap.leads.find((item) => item.id === lead.id);
-    res.status(201).json({ lead: createdLead ?? lead });
+    res.status(201).json({ lead: createdLead ?? lead, automationTasks });
   } catch (error) {
     responseError(res, 500, error instanceof Error ? error.message : "Не удалось создать сделку");
   }
@@ -956,8 +964,14 @@ app.patch("/api/leads/:id/stage", makeRequireAuth(MANAGER_UP), async (req, res) 
     toStageName: targetStage.name,
     message: `Сделка перемещена: ${oldStage?.name ?? "—"} → ${targetStage.name}`
   }, actorFromLocals(res));
+
+  // Run automation rules for the new stage
+  const automationTasks = await runAutomationRules(
+    "lead_entered_stage", id, stageId, existingLead.responsibleId ?? null, actorFromLocals(res)
+  );
+
   const bootstrap = await getBootstrap();
-  res.json({ lead: bootstrap.leads.find((item) => item.id === id) ?? null });
+  res.json({ lead: bootstrap.leads.find((item) => item.id === id) ?? null, automationTasks });
 });
 
 app.get("/api/leads/:id/tasks", async (req, res) => {
@@ -3153,6 +3167,309 @@ async function createNotification(data: {
   } catch { /* non-critical — unique constraint on dedupeKey silently prevents duplicates */ }
 }
 
+// ── Task Types schema + seed ───────────────────────────────────────────────────
+
+const SYSTEM_TASK_TYPES = [
+  { code: "call",              label: "Звонок",           icon: "phone",    color: "blue"   },
+  { code: "message",           label: "Сообщение",        icon: "message",  color: "blue"   },
+  { code: "measurement",       label: "Замер",            icon: "calendar", color: "orange" },
+  { code: "installation",      label: "Монтаж",           icon: "tool",     color: "purple" },
+  { code: "commercial_offer",  label: "КП",               icon: "document", color: "green"  },
+  { code: "follow_up",         label: "Повторная связь",  icon: "repeat",   color: "red"    },
+  { code: "other",             label: "Другое",           icon: "check",    color: "gray"   },
+];
+
+async function ensureTaskTypesSchema() {
+  try {
+    await db.run(sql.raw(`
+      CREATE TABLE IF NOT EXISTS task_types (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT NOT NULL UNIQUE,
+        label TEXT NOT NULL,
+        icon TEXT NOT NULL DEFAULT 'check',
+        color TEXT NOT NULL DEFAULT 'gray',
+        is_active INTEGER NOT NULL DEFAULT 1,
+        is_system INTEGER NOT NULL DEFAULT 0,
+        created_by INTEGER,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `));
+  } catch { /* already exists */ }
+
+  // Seed system types idempotently (INSERT OR IGNORE)
+  const now = nowIso();
+  for (const t of SYSTEM_TASK_TYPES) {
+    try {
+      await db.run(sql.raw(
+        `INSERT OR IGNORE INTO task_types (code, label, icon, color, is_active, is_system, created_at, updated_at) VALUES ('${t.code}', '${t.label}', '${t.icon}', '${t.color}', 1, 1, '${now}', '${now}')`
+      ));
+    } catch { /* */ }
+  }
+}
+
+// ── Task Automation schema + seed ──────────────────────────────────────────────
+
+async function ensureTaskAutomationSchema() {
+  try {
+    await db.run(sql.raw(`
+      CREATE TABLE IF NOT EXISTS task_automation_rules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        is_active INTEGER NOT NULL DEFAULT 0,
+        trigger_type TEXT NOT NULL DEFAULT 'lead_entered_stage',
+        stage_id INTEGER,
+        source TEXT,
+        delay_minutes INTEGER NOT NULL DEFAULT 0,
+        task_type_code TEXT NOT NULL DEFAULT 'call',
+        title_template TEXT NOT NULL,
+        comment_template TEXT,
+        assignee_mode TEXT NOT NULL DEFAULT 'responsible',
+        fixed_user_id INTEGER,
+        created_by INTEGER,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `));
+  } catch { /* already exists */ }
+  try {
+    await db.run(sql.raw(`
+      CREATE TABLE IF NOT EXISTS task_automation_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        rule_id INTEGER NOT NULL,
+        lead_id INTEGER,
+        stage_id INTEGER,
+        dedupe_key TEXT NOT NULL UNIQUE,
+        created_task_id INTEGER,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `));
+  } catch { /* already exists */ }
+
+  // Seed Bakha Potolok default automation rules (inactive by default)
+  const defaultRules = [
+    { name: "Новый лид — позвонить",     triggerType: "lead_created",        stageId: null, delay: 15,   typeCode: "call",             title: "Позвонить клиенту"      },
+    { name: "НДЗ — перезвонить",         triggerType: "lead_entered_stage",  stageName: "НДЗ",           delay: 60,   typeCode: "call",             title: "Перезвонить клиенту"    },
+    { name: "Согласование — followup",   triggerType: "lead_entered_stage",  stageName: "Согласование",  delay: 1440, typeCode: "follow_up",        title: "Повторная связь"        },
+    { name: "Назначил замер — подтверд", triggerType: "lead_entered_stage",  stageName: "Назначил замер",delay: 1440, typeCode: "measurement",      title: "Подтвердить замер"      },
+    { name: "Замер проведён — отправить расчёт", triggerType: "lead_entered_stage", stageName: "Замер проведён", delay: 0, typeCode: "commercial_offer", title: "Отправить расчёт клиенту" },
+    { name: "Предоплата — подготовить резерв",   triggerType: "lead_entered_stage", stageName: "Предоплата",     delay: 0, typeCode: "other",            title: "Подготовить резерв" },
+  ];
+
+  // Look up stage IDs from DB
+  const now = nowIso();
+  const allStages = await db.select().from(stages);
+  const stageByName = new Map(allStages.map((s) => [s.name, s]));
+
+  for (const rule of defaultRules) {
+    let stageId: number | null = null;
+    if (rule.triggerType === "lead_entered_stage" && "stageName" in rule) {
+      stageId = stageByName.get(rule.stageName as string)?.id ?? null;
+    }
+    try {
+      await db.run(sql.raw(
+        `INSERT OR IGNORE INTO task_automation_rules ` +
+        `(name, is_active, trigger_type, stage_id, delay_minutes, task_type_code, title_template, assignee_mode, created_at, updated_at) VALUES ` +
+        `('${rule.name}', 0, '${rule.triggerType}', ${stageId !== null ? stageId : "NULL"}, ${rule.delay}, '${rule.typeCode}', '${rule.title}', 'responsible', '${now}', '${now}')`
+      ));
+    } catch { /* duplicate name if seeded before */ }
+  }
+}
+
+// ── Automation engine ─────────────────────────────────────────────────────────
+
+async function runAutomationRules(
+  triggerType: "lead_created" | "lead_entered_stage",
+  leadId: number,
+  stageId: number | null,
+  responsibleId: number | null,
+  actorId?: number | null
+): Promise<Array<{ id: number; title: string; type: string }>> {
+  const created: Array<{ id: number; title: string; type: string }> = [];
+  try {
+    let rules: typeof taskAutomationRules.$inferSelect[];
+    if (triggerType === "lead_entered_stage" && stageId !== null) {
+      rules = await db.select().from(taskAutomationRules).where(
+        and(eq(taskAutomationRules.isActive, true), eq(taskAutomationRules.triggerType, "lead_entered_stage"), eq(taskAutomationRules.stageId, stageId))
+      );
+    } else if (triggerType === "lead_created") {
+      rules = await db.select().from(taskAutomationRules).where(
+        and(eq(taskAutomationRules.isActive, true), eq(taskAutomationRules.triggerType, "lead_created"))
+      );
+    } else {
+      return [];
+    }
+
+    for (const rule of rules) {
+      const dedupeKey = stageId !== null
+        ? `automation:${rule.id}:lead:${leadId}:stage:${stageId}`
+        : `automation:${rule.id}:lead:${leadId}:trigger:${triggerType}`;
+
+      // Check dedupe
+      const existing = await db.select({ id: taskAutomationRuns.id }).from(taskAutomationRuns).where(eq(taskAutomationRuns.dedupeKey, dedupeKey));
+      if (existing.length > 0) continue;
+
+      const dueAt = new Date(Date.now() + rule.delayMinutes * 60 * 1000).toISOString();
+      const assigneeId = rule.assigneeMode === "fixed_user" ? rule.fixedUserId : responsibleId;
+      const now = nowIso();
+
+      const [newTask] = await db.insert(tasks).values({
+        title: rule.titleTemplate,
+        type: rule.taskTypeCode,
+        dueAt,
+        priority: "normal",
+        status: "open",
+        leadId,
+        assigneeId: assigneeId ?? null,
+        createdAt: now,
+        updatedAt: now,
+      }).returning();
+
+      // Record run for deduplication
+      await db.insert(taskAutomationRuns).values({
+        ruleId: rule.id,
+        leadId,
+        stageId,
+        dedupeKey,
+        createdTaskId: newTask.id,
+        createdAt: now,
+      });
+
+      // Notify assignee
+      if (assigneeId) {
+        const dueStr = new Date(dueAt).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" });
+        await createNotification({
+          userId: assigneeId,
+          actorId: actorId ?? null,
+          type: "task.assigned",
+          title: "Автоматически создана задача",
+          body: `${rule.titleTemplate} — ${dueStr}`,
+          entityType: "task",
+          entityId: newTask.id,
+          link: `/leads/${leadId}`,
+          dedupeKey: `task.automation.assigned:${newTask.id}`,
+        });
+      }
+
+      created.push({ id: newTask.id, title: newTask.title, type: newTask.type });
+    }
+  } catch (err) {
+    console.error("[AUTOMATION] runAutomationRules error:", err instanceof Error ? err.message : err);
+  }
+  return created;
+}
+
+// ── Task Types API ─────────────────────────────────────────────────────────────
+
+app.get("/api/task-types", makeRequireAuth(), async (_req, res) => {
+  try {
+    const rows = await db.select().from(taskTypes).where(eq(taskTypes.isActive, true)).orderBy(taskTypes.id);
+    res.json({ taskTypes: rows.map((r) => ({ id: r.id, code: r.code, label: r.label, icon: r.icon, color: r.color, isSystem: r.isSystem })) });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to load task types" });
+  }
+});
+
+app.get("/api/task-types/all", makeRequireAuth(OWNER_ADMIN), async (_req, res) => {
+  try {
+    const rows = await db.select().from(taskTypes).orderBy(taskTypes.id);
+    res.json({ taskTypes: rows });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to load task types" });
+  }
+});
+
+app.post("/api/task-types", makeRequireAuth(OWNER_ADMIN), async (req, res) => {
+  const body = req.body as Record<string, unknown>;
+  const code = String(body.code ?? "").trim().toLowerCase().replace(/\s+/g, "_");
+  const label = String(body.label ?? "").trim();
+  const icon = String(body.icon ?? "check").trim();
+  const color = String(body.color ?? "gray").trim();
+  if (!code || !label) { res.status(400).json({ error: "code and label required" }); return; }
+  try {
+    const now = nowIso();
+    const [row] = await db.insert(taskTypes).values({ code, label, icon, color, isActive: true, isSystem: false, createdBy: actorFromLocals(res), createdAt: now, updatedAt: now }).returning();
+    res.status(201).json({ taskType: row });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : "Duplicate code or invalid data" });
+  }
+});
+
+app.patch("/api/task-types/:id", makeRequireAuth(OWNER_ADMIN), async (req, res) => {
+  const id = Number(req.params.id);
+  const body = req.body as Record<string, unknown>;
+  const patch: Record<string, unknown> = { updatedAt: nowIso() };
+  if (body.label !== undefined) patch.label = String(body.label).trim();
+  if (body.icon !== undefined) patch.icon = String(body.icon).trim();
+  if (body.color !== undefined) patch.color = String(body.color).trim();
+  if (body.isActive !== undefined) patch.isActive = Boolean(body.isActive);
+  try {
+    const [updated] = await db.update(taskTypes).set(patch).where(eq(taskTypes.id, id)).returning();
+    if (!updated) { res.status(404).json({ error: "Task type not found" }); return; }
+    res.json({ taskType: updated });
+  } catch (err) {
+    res.status(500).json({ error: "Update failed" });
+  }
+});
+
+// ── Task Automation Rules API ──────────────────────────────────────────────────
+
+app.get("/api/task-automation-rules", makeRequireAuth(OWNER_ADMIN), async (_req, res) => {
+  try {
+    const rules = await db.select().from(taskAutomationRules).orderBy(taskAutomationRules.id);
+    const allStages = await db.select({ id: stages.id, name: stages.name }).from(stages);
+    const stageMap = new Map(allStages.map((s) => [s.id, s.name]));
+    res.json({ rules: rules.map((r) => ({ ...r, stageName: r.stageId ? (stageMap.get(r.stageId) ?? null) : null })) });
+  } catch {
+    res.status(500).json({ error: "Failed to load automation rules" });
+  }
+});
+
+app.post("/api/task-automation-rules", makeRequireAuth(OWNER_ADMIN), async (req, res) => {
+  const body = req.body as Record<string, unknown>;
+  const name = String(body.name ?? "").trim();
+  const triggerType = String(body.triggerType ?? "lead_entered_stage");
+  const stageId = body.stageId ? Number(body.stageId) : null;
+  const delayMinutes = Number(body.delayMinutes ?? 0);
+  const taskTypeCode = String(body.taskTypeCode ?? "call");
+  const titleTemplate = String(body.titleTemplate ?? "").trim();
+  const assigneeMode = String(body.assigneeMode ?? "responsible");
+  const fixedUserId = body.fixedUserId ? Number(body.fixedUserId) : null;
+  if (!name || !titleTemplate) { res.status(400).json({ error: "name and titleTemplate required" }); return; }
+  try {
+    const now = nowIso();
+    const [row] = await db.insert(taskAutomationRules).values({
+      name, isActive: false, triggerType, stageId, delayMinutes, taskTypeCode, titleTemplate,
+      assigneeMode, fixedUserId, createdBy: actorFromLocals(res), createdAt: now, updatedAt: now
+    }).returning();
+    res.status(201).json({ rule: row });
+  } catch (err) {
+    res.status(500).json({ error: "Create failed" });
+  }
+});
+
+app.patch("/api/task-automation-rules/:id", makeRequireAuth(OWNER_ADMIN), async (req, res) => {
+  const id = Number(req.params.id);
+  const body = req.body as Record<string, unknown>;
+  const patch: Record<string, unknown> = { updatedAt: nowIso() };
+  if (body.name !== undefined) patch.name = String(body.name).trim();
+  if (body.isActive !== undefined) patch.isActive = Boolean(body.isActive);
+  if (body.triggerType !== undefined) patch.triggerType = String(body.triggerType);
+  if (body.stageId !== undefined) patch.stageId = body.stageId ? Number(body.stageId) : null;
+  if (body.delayMinutes !== undefined) patch.delayMinutes = Number(body.delayMinutes);
+  if (body.taskTypeCode !== undefined) patch.taskTypeCode = String(body.taskTypeCode);
+  if (body.titleTemplate !== undefined) patch.titleTemplate = String(body.titleTemplate).trim();
+  if (body.assigneeMode !== undefined) patch.assigneeMode = String(body.assigneeMode);
+  if (body.fixedUserId !== undefined) patch.fixedUserId = body.fixedUserId ? Number(body.fixedUserId) : null;
+  try {
+    const [updated] = await db.update(taskAutomationRules).set(patch).where(eq(taskAutomationRules.id, id)).returning();
+    if (!updated) { res.status(404).json({ error: "Rule not found" }); return; }
+    res.json({ rule: updated });
+  } catch (err) {
+    res.status(500).json({ error: "Update failed" });
+  }
+});
+
 // ── Notification endpoints ─────────────────────────────────────────────────────
 
 app.get("/api/notifications", makeRequireAuth(), async (_req, res) => {
@@ -3252,6 +3569,8 @@ async function main() {
   await ensureAiSchema();
   await ensureWappiSchema();
   await ensureNotificationsSchema();
+  await ensureTaskTypesSchema();
+  await ensureTaskAutomationSchema();
   logWappiStartupWarnings();
   logAiManagerStartupWarnings();
   // Run due-reminder check immediately, then every 60 s

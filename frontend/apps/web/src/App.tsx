@@ -40,13 +40,15 @@ import {
   Shield,
   SlidersHorizontal,
   Sparkles,
+  Tag,
   Timer,
   TrendingUp,
   UserRound,
   Users,
   Wallet,
   Webhook,
-  X
+  X,
+  Zap
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
@@ -404,6 +406,8 @@ export default function App() {
           <Route path="/settings/integrations" element={<IntegrationsSettingsPage />} />
           <Route path="/settings/integrations/telephony" element={<TelephonySettingsPage />} />
           <Route path="/settings/integrations/wappi" element={<WappiSettingsPage />} />
+          <Route path="/settings/task-types" element={<TaskTypesSettingsPage />} />
+          <Route path="/settings/automation" element={<AutomationSettingsPage />} />
           <Route path="/settings/system" element={<SystemStatusPage />} />
         </Route>
       </Route>
@@ -714,6 +718,8 @@ function AppShell({ children }: { children: React.ReactNode }) {
     { label: "Задачи", href: "/tasks", icon: CheckSquare, badge: String(tasks.filter((item) => item.status !== "done").length) },
     { label: "Аналитика", href: "/analytics", icon: BarChart3 },
     { label: "Настройки", href: "/settings/users", icon: Settings, adminOnly: true },
+    { label: "Типы задач", href: "/settings/task-types", icon: Tag, adminOnly: true },
+    { label: "Автоматизация", href: "/settings/automation", icon: Zap, adminOnly: true },
     { label: "Состояние системы", href: "/settings/system", icon: Activity, adminOnly: true }
   ];
   const navItems = allNavItems.filter((item) => !item.adminOnly || isAdminOrOwner);
@@ -1824,7 +1830,7 @@ function KanbanPage({ pipelineCode, title }: { pipelineCode: "sales" | "measurem
     // Optimistic update — card appears in target column immediately.
     setOptimisticStageMap((prev) => new Map(prev).set(leadId, stageId));
     try {
-      await apiJson(`/api/leads/${leadId}/stage`, {
+      const result = await apiJson<{ lead: unknown; automationTasks?: Array<{ id: number; title: string; type: string }> }>(`/api/leads/${leadId}/stage`, {
         method: "PATCH",
         body: JSON.stringify({ stageId })
       });
@@ -1832,6 +1838,9 @@ function KanbanPage({ pipelineCode, title }: { pipelineCode: "sales" | "measurem
       // Server state is now up-to-date — drop the optimistic override.
       setOptimisticStageMap((prev) => { const m = new Map(prev); m.delete(leadId); return m; });
       notify("Этап сделки сохранён.");
+      if (result.automationTasks && result.automationTasks.length > 0) {
+        result.automationTasks.forEach((t) => notify(`Создана задача: «${t.title}»`));
+      }
     } catch (error) {
       // Rollback: clear override so card snaps back to original column.
       setOptimisticStageMap((prev) => { const m = new Map(prev); m.delete(leadId); return m; });
@@ -2421,13 +2430,16 @@ function LeadDetailPage() {
 
   async function changeStage(stageId: number) {
     try {
-      await apiJson(`/api/leads/${currentLead.id}/stage`, {
+      const result = await apiJson<{ lead: unknown; automationTasks?: Array<{ id: number; title: string; type: string }> }>(`/api/leads/${currentLead.id}/stage`, {
         method: "PATCH",
         body: JSON.stringify({ stageId })
       });
       await refresh();
       await loadLeadDetail(currentLead.id);
       notify("Этап сделки сохранён.");
+      if (result.automationTasks && result.automationTasks.length > 0) {
+        result.automationTasks.forEach((t) => notify(`Создана задача: «${t.title}»`));
+      }
     } catch (error) {
       notify(error instanceof Error ? error.message : "Не удалось изменить этап.");
     }
@@ -4741,6 +4753,22 @@ function CreateTaskModal({
   const { users, leads } = useCrm();
   const notify = useToast();
 
+  // Load task types from API, fallback to hardcoded TASK_TYPES
+  const [apiTaskTypes, setApiTaskTypes] = useState<Array<{ value: string; label: string; emoji: string; color?: string }>>(
+    TASK_TYPES.map((t) => ({ ...t }))
+  );
+  useEffect(() => {
+    fetch("/api/task-types", { credentials: "include" })
+      .then((r) => r.ok ? r.json() as Promise<{ taskTypes: Array<{ code: string; label: string; icon: string; color: string }> }> : Promise.reject())
+      .then((data) => {
+        if (data.taskTypes?.length) {
+          const iconToEmoji: Record<string, string> = { phone: "📞", message: "💬", calendar: "📐", tool: "🔨", document: "📄", repeat: "🔄", check: "📌", flag: "🚩", fire: "🔥" };
+          setApiTaskTypes(data.taskTypes.map((t) => ({ value: t.code, label: t.label, emoji: iconToEmoji[t.icon] ?? "📌", color: t.color })));
+        }
+      })
+      .catch(() => { /* fallback to TASK_TYPES */ });
+  }, []);
+
   const savedPreset = localStorage.getItem(PRESET_LS_KEY) ?? "tomorrow";
   const [selectedPreset, setSelectedPreset] = useState<string>(() => defaults?.dueAt ? "" : savedPreset);
   const [title, setTitle] = useState(defaults?.title ?? "");
@@ -4828,7 +4856,7 @@ function CreateTaskModal({
                 value={type}
                 onChange={(e) => setType(e.target.value)}
               >
-                {TASK_TYPES.map((t) => (
+                {apiTaskTypes.map((t) => (
                   <option key={t.value} value={t.value}>{t.emoji} {t.label}</option>
                 ))}
               </select>
@@ -6833,4 +6861,398 @@ function groupBy<T>(items: T[], getter: (item: T) => string) {
     acc[key].push(item);
     return acc;
   }, {});
+}
+
+// ── Task Types Settings Page ───────────────────────────────────────────────────
+
+type TaskTypeRow = { id: number; code: string; label: string; icon: string; color: string; isActive: boolean; isSystem: boolean };
+
+const ICON_OPTIONS = [
+  { value: "phone",    label: "📞 Звонок"    },
+  { value: "message",  label: "💬 Сообщение" },
+  { value: "calendar", label: "📐 Замер"     },
+  { value: "tool",     label: "🔨 Монтаж"    },
+  { value: "document", label: "📄 Документ"  },
+  { value: "repeat",   label: "🔄 Повтор"    },
+  { value: "check",    label: "📌 Другое"    },
+  { value: "flag",     label: "🚩 Флаг"      },
+  { value: "fire",     label: "🔥 Срочно"    },
+];
+const COLOR_OPTIONS = [
+  { value: "gray",   label: "Серый",     dot: "#6b7280" },
+  { value: "blue",   label: "Синий",     dot: "#3b82f6" },
+  { value: "green",  label: "Зелёный",   dot: "#22c55e" },
+  { value: "orange", label: "Оранжевый", dot: "#f97316" },
+  { value: "red",    label: "Красный",   dot: "#ef4444" },
+  { value: "purple", label: "Фиолетов.", dot: "#a855f7" },
+];
+
+function TaskTypesSettingsPage() {
+  const { refresh } = useCrm();
+  const notify = useToast();
+  const currentUser = JSON.parse(localStorage.getItem("bakha_user") ?? "{}") as { role?: string | null };
+  const isAdminOrOwner = currentUser.role === "owner" || currentUser.role === "admin";
+
+  const [types, setTypes] = useState<TaskTypeRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showCreate, setShowCreate] = useState(false);
+  const [newLabel, setNewLabel] = useState("");
+  const [newCode, setNewCode] = useState("");
+  const [newIcon, setNewIcon] = useState("check");
+  const [newColor, setNewColor] = useState("gray");
+  const [saving, setSaving] = useState(false);
+
+  const iconToEmoji: Record<string, string> = { phone: "📞", message: "💬", calendar: "📐", tool: "🔨", document: "📄", repeat: "🔄", check: "📌", flag: "🚩", fire: "🔥" };
+
+  async function loadTypes() {
+    setLoading(true);
+    try {
+      const data = await apiJson<{ taskTypes: TaskTypeRow[] }>("/api/task-types/all", {});
+      setTypes(data.taskTypes ?? []);
+    } catch { notify("Не удалось загрузить типы задач."); }
+    setLoading(false);
+  }
+
+  useEffect(() => { void loadTypes(); }, []);
+
+  async function handleCreate() {
+    if (!newLabel.trim()) { notify("Укажите название типа."); return; }
+    setSaving(true);
+    const code = newCode.trim() || newLabel.trim().toLowerCase().replace(/\s+/g, "_").replace(/[^a-zа-я0-9_]/g, "");
+    try {
+      await apiJson("/api/task-types", { method: "POST", body: JSON.stringify({ code, label: newLabel.trim(), icon: newIcon, color: newColor }) });
+      notify("Тип задачи создан.");
+      setShowCreate(false); setNewLabel(""); setNewCode(""); setNewIcon("check"); setNewColor("gray");
+      await loadTypes(); await refresh();
+    } catch (e) { notify(e instanceof Error ? e.message : "Ошибка создания."); }
+    setSaving(false);
+  }
+
+  async function toggleActive(t: TaskTypeRow) {
+    try {
+      await apiJson(`/api/task-types/${t.id}`, { method: "PATCH", body: JSON.stringify({ isActive: !t.isActive }) });
+      setTypes((prev) => prev.map((x) => x.id === t.id ? { ...x, isActive: !t.isActive } : x));
+      notify(t.isActive ? "Тип деактивирован." : "Тип активирован.");
+    } catch { notify("Ошибка обновления."); }
+  }
+
+  return (
+    <>
+      <PageHeader
+        title="Типы задач"
+        subtitle="Системные и пользовательские типы задач"
+        action={isAdminOrOwner ? "Создать тип" : undefined}
+        onAction={isAdminOrOwner ? () => setShowCreate(true) : undefined}
+      />
+      {loading ? (
+        <div className="flex items-center justify-center py-16 text-slate-400">Загрузка...</div>
+      ) : (
+        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <table className="w-full text-sm">
+            <thead className="border-b border-slate-100 bg-slate-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">Иконка</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">Название</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">Код</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">Цвет</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">Тип</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">Статус</th>
+                {isAdminOrOwner && <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-400">Действия</th>}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {types.map((t) => (
+                <tr key={t.id} className="hover:bg-slate-50">
+                  <td className="px-4 py-3 text-lg">{iconToEmoji[t.icon] ?? "📌"}</td>
+                  <td className="px-4 py-3 font-semibold text-slate-900">{t.label}</td>
+                  <td className="px-4 py-3 font-mono text-xs text-slate-400">{t.code}</td>
+                  <td className="px-4 py-3">
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="inline-block h-3 w-3 rounded-full" style={{ background: COLOR_OPTIONS.find((c) => c.value === t.color)?.dot ?? "#6b7280" }} />
+                      <span className="text-xs text-slate-500">{COLOR_OPTIONS.find((c) => c.value === t.color)?.label ?? t.color}</span>
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${t.isSystem ? "bg-blue-50 text-blue-700" : "bg-slate-100 text-slate-600"}`}>
+                      {t.isSystem ? "Системный" : "Свой"}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${t.isActive ? "bg-green-50 text-green-700" : "bg-slate-100 text-slate-400"}`}>
+                      {t.isActive ? "Активен" : "Выкл"}
+                    </span>
+                  </td>
+                  {isAdminOrOwner && (
+                    <td className="px-4 py-3 text-right">
+                      <button
+                        onClick={() => void toggleActive(t)}
+                        className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${t.isActive ? "bg-slate-100 text-slate-600 hover:bg-red-50 hover:text-red-600" : "bg-green-50 text-green-700 hover:bg-green-100"}`}
+                      >
+                        {t.isActive ? "Деактивировать" : "Активировать"}
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              ))}
+              {types.length === 0 && (
+                <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">Нет типов задач</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {showCreate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(15,23,42,0.45)", backdropFilter: "blur(4px)" }} onClick={(e) => { if (e.target === e.currentTarget) setShowCreate(false); }}>
+          <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-5 py-4">
+              <h2 className="text-lg font-bold text-slate-900">Новый тип задачи</h2>
+              <button onClick={() => setShowCreate(false)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-200"><X size={18} /></button>
+            </div>
+            <div className="space-y-3 px-5 py-4">
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-500">Название *</label>
+                <input autoFocus className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-bakha-orange focus:ring-4 focus:ring-orange-100" placeholder="Повторная связь" value={newLabel} onChange={(e) => setNewLabel(e.target.value)} />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-500">Код (необязательно)</label>
+                <input className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-mono outline-none focus:border-bakha-orange" placeholder="follow_up" value={newCode} onChange={(e) => setNewCode(e.target.value)} />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-500">Иконка</label>
+                  <select className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-bakha-orange" value={newIcon} onChange={(e) => setNewIcon(e.target.value)}>
+                    {ICON_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-500">Цвет</label>
+                  <select className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-bakha-orange" value={newColor} onChange={(e) => setNewColor(e.target.value)}>
+                    {COLOR_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 border-t border-slate-200 px-5 py-4">
+              <button onClick={() => setShowCreate(false)} className="rounded-lg bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200">Отмена</button>
+              <button onClick={() => void handleCreate()} disabled={saving} className="rounded-lg bg-bakha-orange px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-orange-500/20 hover:bg-orange-600 disabled:opacity-60">{saving ? "Создание..." : "Создать"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ── Automation Settings Page ───────────────────────────────────────────────────
+
+type AutomationRuleRow = {
+  id: number; name: string; isActive: boolean; triggerType: string;
+  stageId: number | null; stageName?: string | null; delayMinutes: number;
+  taskTypeCode: string; titleTemplate: string; assigneeMode: string;
+};
+
+const TRIGGER_LABELS: Record<string, string> = {
+  lead_created: "Новая сделка",
+  lead_entered_stage: "Переход в этап",
+};
+const DELAY_OPTIONS = [
+  { value: 0,    label: "Сразу"       },
+  { value: 15,   label: "+15 минут"   },
+  { value: 30,   label: "+30 минут"   },
+  { value: 60,   label: "+1 час"      },
+  { value: 1440, label: "+1 день"     },
+  { value: 10080,label: "+1 неделя"   },
+];
+
+function AutomationSettingsPage() {
+  const { stages, users } = useCrm();
+  const notify = useToast();
+  const currentUser = JSON.parse(localStorage.getItem("bakha_user") ?? "{}") as { role?: string | null };
+  const isAdminOrOwner = currentUser.role === "owner" || currentUser.role === "admin";
+
+  const [rules, setRules] = useState<AutomationRuleRow[]>([]);
+  const [taskTypeOptions, setTaskTypeOptions] = useState<Array<{ code: string; label: string }>>([]);
+  const [loading, setLoading] = useState(true);
+  const [showCreate, setShowCreate] = useState(false);
+  const [form, setForm] = useState({
+    name: "", triggerType: "lead_entered_stage", stageId: "", delayMinutes: 0,
+    taskTypeCode: "call", titleTemplate: "", assigneeMode: "responsible", fixedUserId: "",
+  });
+  const [saving, setSaving] = useState(false);
+
+  async function loadRules() {
+    setLoading(true);
+    try {
+      const data = await apiJson<{ rules: AutomationRuleRow[] }>("/api/task-automation-rules", {});
+      setRules(data.rules ?? []);
+    } catch { notify("Не удалось загрузить правила."); }
+    try {
+      const tData = await apiJson<{ taskTypes: Array<{ code: string; label: string }> }>("/api/task-types", {});
+      setTaskTypeOptions(tData.taskTypes ?? []);
+    } catch { /* ignore */ }
+    setLoading(false);
+  }
+
+  useEffect(() => { void loadRules(); }, []);
+
+  async function toggleRule(r: AutomationRuleRow) {
+    try {
+      await apiJson(`/api/task-automation-rules/${r.id}`, { method: "PATCH", body: JSON.stringify({ isActive: !r.isActive }) });
+      setRules((prev) => prev.map((x) => x.id === r.id ? { ...x, isActive: !r.isActive } : x));
+      notify(r.isActive ? "Правило отключено." : "Правило активировано.");
+    } catch { notify("Ошибка."); }
+  }
+
+  async function handleCreate() {
+    if (!form.name.trim() || !form.titleTemplate.trim()) { notify("Заполните название и шаблон задачи."); return; }
+    setSaving(true);
+    try {
+      await apiJson("/api/task-automation-rules", {
+        method: "POST",
+        body: JSON.stringify({
+          name: form.name, triggerType: form.triggerType, stageId: form.stageId ? Number(form.stageId) : null,
+          delayMinutes: form.delayMinutes, taskTypeCode: form.taskTypeCode, titleTemplate: form.titleTemplate,
+          assigneeMode: form.assigneeMode, fixedUserId: form.fixedUserId ? Number(form.fixedUserId) : null,
+        }),
+      });
+      notify("Правило создано (неактивно).");
+      setShowCreate(false);
+      setForm({ name: "", triggerType: "lead_entered_stage", stageId: "", delayMinutes: 0, taskTypeCode: "call", titleTemplate: "", assigneeMode: "responsible", fixedUserId: "" });
+      await loadRules();
+    } catch (e) { notify(e instanceof Error ? e.message : "Ошибка."); }
+    setSaving(false);
+  }
+
+  const salesStages = stages.filter((s) => s.pipelineId === 1);
+
+  return (
+    <>
+      <PageHeader
+        title="Автоматизация задач"
+        subtitle="Правила автоматического создания задач при переходе сделки между этапами"
+        action={isAdminOrOwner ? "Добавить правило" : undefined}
+        onAction={isAdminOrOwner ? () => setShowCreate(true) : undefined}
+      />
+
+      {!isAdminOrOwner && (
+        <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50 px-5 py-4 text-sm text-slate-600">
+          Только администраторы могут управлять правилами автоматизации.
+        </div>
+      )}
+
+      {loading ? (
+        <div className="flex items-center justify-center py-16 text-slate-400">Загрузка...</div>
+      ) : rules.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-slate-200 bg-white py-16 text-center">
+          <Zap size={32} className="mx-auto mb-3 text-slate-300" />
+          <p className="text-sm font-semibold text-slate-400">Нет правил автоматизации</p>
+          <p className="mt-1 text-xs text-slate-300">Создайте правило, чтобы задачи ставились автоматически</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {rules.map((r) => (
+            <div key={r.id} className="flex items-center gap-4 rounded-xl border border-slate-200 bg-white px-4 py-3">
+              <div className={`h-2.5 w-2.5 shrink-0 rounded-full ${r.isActive ? "bg-green-500" : "bg-slate-300"}`} />
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold text-slate-900">{r.name}</p>
+                <p className="text-xs text-slate-400">
+                  {TRIGGER_LABELS[r.triggerType] ?? r.triggerType}
+                  {r.stageName ? ` → «${r.stageName}»` : ""}
+                  {" · "}
+                  {DELAY_OPTIONS.find((d) => d.value === r.delayMinutes)?.label ?? `+${r.delayMinutes} мин`}
+                  {" · "}
+                  Задача: «{r.titleTemplate}»
+                </p>
+              </div>
+              {isAdminOrOwner && (
+                <button
+                  onClick={() => void toggleRule(r)}
+                  className={`shrink-0 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${r.isActive ? "bg-slate-100 text-slate-600 hover:bg-red-50 hover:text-red-600" : "bg-green-50 text-green-700 hover:bg-green-100"}`}
+                >
+                  {r.isActive ? "Выкл" : "Вкл"}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showCreate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(15,23,42,0.45)", backdropFilter: "blur(4px)" }} onClick={(e) => { if (e.target === e.currentTarget) setShowCreate(false); }}>
+          <div className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-5 py-4">
+              <h2 className="text-lg font-bold text-slate-900">Новое правило</h2>
+              <button onClick={() => setShowCreate(false)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-200"><X size={18} /></button>
+            </div>
+            <div className="space-y-3 overflow-y-auto px-5 py-4 max-h-[65vh]">
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-500">Название правила *</label>
+                <input autoFocus className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-bakha-orange focus:ring-4 focus:ring-orange-100" placeholder="Замер проведён — отправить расчёт" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-500">Триггер</label>
+                  <select className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-bakha-orange" value={form.triggerType} onChange={(e) => setForm((f) => ({ ...f, triggerType: e.target.value, stageId: "" }))}>
+                    <option value="lead_created">Новая сделка</option>
+                    <option value="lead_entered_stage">Переход в этап</option>
+                  </select>
+                </div>
+                {form.triggerType === "lead_entered_stage" && (
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold text-slate-500">Этап</label>
+                    <select className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-bakha-orange" value={form.stageId} onChange={(e) => setForm((f) => ({ ...f, stageId: e.target.value }))}>
+                      <option value="">Выберите этап</option>
+                      {salesStages.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  </div>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-500">Задержка</label>
+                  <select className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-bakha-orange" value={form.delayMinutes} onChange={(e) => setForm((f) => ({ ...f, delayMinutes: Number(e.target.value) }))}>
+                    {DELAY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-500">Тип задачи</label>
+                  <select className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-bakha-orange" value={form.taskTypeCode} onChange={(e) => setForm((f) => ({ ...f, taskTypeCode: e.target.value }))}>
+                    {taskTypeOptions.map((t) => <option key={t.code} value={t.code}>{t.label}</option>)}
+                    {taskTypeOptions.length === 0 && <option value="call">Звонок</option>}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-500">Название задачи (шаблон) *</label>
+                <input className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-bakha-orange focus:ring-4 focus:ring-orange-100" placeholder="Отправить расчёт клиенту" value={form.titleTemplate} onChange={(e) => setForm((f) => ({ ...f, titleTemplate: e.target.value }))} />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-500">Ответственный</label>
+                  <select className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-bakha-orange" value={form.assigneeMode} onChange={(e) => setForm((f) => ({ ...f, assigneeMode: e.target.value }))}>
+                    <option value="responsible">Ответственный сделки</option>
+                    <option value="fixed_user">Конкретный пользователь</option>
+                  </select>
+                </div>
+                {form.assigneeMode === "fixed_user" && (
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold text-slate-500">Пользователь</label>
+                    <select className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-bakha-orange" value={form.fixedUserId} onChange={(e) => setForm((f) => ({ ...f, fixedUserId: e.target.value }))}>
+                      <option value="">Выберите</option>
+                      {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                    </select>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 border-t border-slate-200 px-5 py-4">
+              <button onClick={() => setShowCreate(false)} className="rounded-lg bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200">Отмена</button>
+              <button onClick={() => void handleCreate()} disabled={saving} className="rounded-lg bg-bakha-orange px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-orange-500/20 hover:bg-orange-600 disabled:opacity-60">{saving ? "Создание..." : "Создать правило"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
 }

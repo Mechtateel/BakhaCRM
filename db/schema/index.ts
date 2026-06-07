@@ -342,6 +342,48 @@ export const aiActionLogs = sqliteTable("ai_action_logs", {
   ...timestamps
 });
 
+/** Task type definitions — system defaults + admin-created custom types. */
+export const taskTypes = sqliteTable("task_types", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  code: text("code").notNull().unique(),
+  label: text("label").notNull(),
+  icon: text("icon").notNull().default("check"),
+  color: text("color").notNull().default("gray"),
+  isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+  isSystem: integer("is_system", { mode: "boolean" }).notNull().default(false),
+  createdBy: integer("created_by"),
+  ...timestamps
+});
+
+/** Automation rules: auto-create tasks when deals enter stages or are created. */
+export const taskAutomationRules = sqliteTable("task_automation_rules", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  isActive: integer("is_active", { mode: "boolean" }).notNull().default(false),
+  triggerType: text("trigger_type").notNull().default("lead_entered_stage"),
+  stageId: integer("stage_id"),
+  source: text("source"),
+  delayMinutes: integer("delay_minutes").notNull().default(0),
+  taskTypeCode: text("task_type_code").notNull().default("call"),
+  titleTemplate: text("title_template").notNull(),
+  commentTemplate: text("comment_template"),
+  assigneeMode: text("assignee_mode").notNull().default("responsible"),
+  fixedUserId: integer("fixed_user_id"),
+  createdBy: integer("created_by"),
+  ...timestamps
+});
+
+/** Deduplification log — prevents same rule from firing twice for the same lead+stage. */
+export const taskAutomationRuns = sqliteTable("task_automation_runs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  ruleId: integer("rule_id").notNull(),
+  leadId: integer("lead_id"),
+  stageId: integer("stage_id"),
+  dedupeKey: text("dedupe_key").notNull().unique(),
+  createdTaskId: integer("created_task_id"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`)
+});
+
 export const usersRelations = relations(users, ({ one, many }) => ({
   role: one(roles, { fields: [users.roleId], references: [roles.id] }),
   leads: many(leads),

@@ -93,6 +93,42 @@ beforeEach(() => {
       if (url === "/api/notifications/read-all" && method === "POST") {
         return jsonResponse({ ok: true });
       }
+      // Task types
+      if (url === "/api/task-types" && method === "GET") {
+        return jsonResponse({ taskTypes: [
+          { id: 1, code: "call",             label: "Звонок",          icon: "phone",    color: "blue",   isSystem: true  },
+          { id: 2, code: "message",          label: "Сообщение",       icon: "message",  color: "blue",   isSystem: true  },
+          { id: 3, code: "measurement",      label: "Замер",           icon: "calendar", color: "orange", isSystem: true  },
+          { id: 4, code: "installation",     label: "Монтаж",          icon: "tool",     color: "purple", isSystem: true  },
+          { id: 5, code: "commercial_offer", label: "КП",              icon: "document", color: "green",  isSystem: true  },
+          { id: 6, code: "follow_up",        label: "Повторная связь", icon: "repeat",   color: "red",    isSystem: true  },
+          { id: 7, code: "other",            label: "Другое",          icon: "check",    color: "gray",   isSystem: true  },
+        ]});
+      }
+      if (url === "/api/task-types/all" && method === "GET") {
+        return jsonResponse({ taskTypes: [
+          { id: 1, code: "call",             label: "Звонок",          icon: "phone",    color: "blue",   isActive: true, isSystem: true },
+          { id: 6, code: "follow_up",        label: "Повторная связь", icon: "repeat",   color: "red",    isActive: true, isSystem: true },
+        ]});
+      }
+      if (url === "/api/task-types" && method === "POST") {
+        return jsonResponse({ taskType: { id: 99, code: "custom", label: "Свой тип", icon: "check", color: "gray", isActive: true, isSystem: false } }, true);
+      }
+      if (url.match(/\/api\/task-types\/\d+/) && method === "PATCH") {
+        return jsonResponse({ taskType: { id: 1, isActive: false } });
+      }
+      // Automation rules
+      if (url === "/api/task-automation-rules" && method === "GET") {
+        return jsonResponse({ rules: [
+          { id: 1, name: "Новый лид — позвонить", isActive: false, triggerType: "lead_created", stageId: null, stageName: null, delayMinutes: 15, taskTypeCode: "call", titleTemplate: "Позвонить клиенту", assigneeMode: "responsible" },
+        ]});
+      }
+      if (url === "/api/task-automation-rules" && method === "POST") {
+        return jsonResponse({ rule: { id: 99, name: "Новое правило", isActive: false } }, true);
+      }
+      if (url.match(/\/api\/task-automation-rules\/\d+/) && method === "PATCH") {
+        return jsonResponse({ rule: { id: 1, isActive: true } });
+      }
       return Promise.reject(new Error("API unavailable in smoke test"));
     })
   );
@@ -1552,5 +1588,92 @@ describe("Bakha CRM smoke", () => {
     expect(screen.queryByText(/Функция будет подключена позже/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/будет активирована/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/mock/i)).not.toBeInTheDocument();
+  });
+
+  // ── Task Types Settings ───────────────────────────────────────────────────────
+
+  it("task types settings page shows system types list", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    localStorage.setItem("bakha_user", JSON.stringify({ name: "Admin", role: "owner" }));
+    renderApp("/settings/task-types");
+
+    expect(await screen.findByRole("heading", { name: /Типы задач/i })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("Звонок")).toBeInTheDocument());
+    expect(screen.getByText("Повторная связь")).toBeInTheDocument();
+  });
+
+  it("task types settings page shows create button for admin", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    localStorage.setItem("bakha_user", JSON.stringify({ name: "Admin", role: "owner" }));
+    renderApp("/settings/task-types");
+
+    expect(await screen.findByRole("heading", { name: /Типы задач/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Создать тип/i })).toBeInTheDocument();
+  });
+
+  it("manager cannot create task type (no create button)", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    localStorage.setItem("bakha_user", JSON.stringify({ name: "Aliya", role: "manager" }));
+    renderApp("/settings/task-types");
+
+    await waitFor(() => expect(screen.getAllByText(/Типы задач/i).length).toBeGreaterThanOrEqual(1));
+    expect(screen.queryByRole("button", { name: /Создать тип/i })).not.toBeInTheDocument();
+  });
+
+  it("admin can open create task type modal", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    localStorage.setItem("bakha_user", JSON.stringify({ name: "Admin", role: "owner" }));
+    renderApp("/settings/task-types");
+
+    expect(await screen.findByRole("heading", { name: /Типы задач/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Создать тип/i }));
+    await waitFor(() => expect(screen.getByText("Новый тип задачи")).toBeInTheDocument());
+    expect(screen.getByPlaceholderText(/Повторная связь/i)).toBeInTheDocument();
+  });
+
+  // ── Automation Settings ───────────────────────────────────────────────────────
+
+  it("automation rules settings page shows rules list", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    localStorage.setItem("bakha_user", JSON.stringify({ name: "Admin", role: "owner" }));
+    renderApp("/settings/automation");
+
+    expect(await screen.findByRole("heading", { name: /Автоматизация задач/i })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("Новый лид — позвонить")).toBeInTheDocument());
+  });
+
+  it("automation settings shows add rule button for admin", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    localStorage.setItem("bakha_user", JSON.stringify({ name: "Admin", role: "owner" }));
+    renderApp("/settings/automation");
+
+    expect(await screen.findByRole("heading", { name: /Автоматизация задач/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Добавить правило/i })).toBeInTheDocument();
+  });
+
+  it("admin can open create automation rule modal", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    localStorage.setItem("bakha_user", JSON.stringify({ name: "Admin", role: "owner" }));
+    renderApp("/settings/automation");
+
+    expect(await screen.findByRole("heading", { name: /Автоматизация задач/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Добавить правило/i }));
+    await waitFor(() => expect(screen.getByText("Новое правило")).toBeInTheDocument());
+    expect(screen.getByPlaceholderText(/Замер проведён/i)).toBeInTheDocument();
+  });
+
+  it("create task modal loads task types from API including Повторная связь", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/tasks");
+
+    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Поставить задачу/i }));
+    await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
+    await waitFor(() => {
+      const select = screen.getAllByRole("combobox").find((el) => (el as HTMLSelectElement).options.length >= 6);
+      expect(select).toBeTruthy();
+      const opts = Array.from((select as HTMLSelectElement).options).map((o) => o.text);
+      expect(opts.some((o) => o.includes("Повторная связь"))).toBe(true);
+    });
   });
 });
