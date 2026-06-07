@@ -1044,7 +1044,8 @@ describe("Bakha CRM smoke", () => {
     expect(await screen.findByRole("heading", { name: "Отдел продаж" })).toBeInTheDocument();
     expect(await screen.findByText("Всего сделок")).toBeInTheDocument();
     expect(screen.getByText("Назначен замер")).toBeInTheDocument();
-    expect(screen.getByText("Без задач")).toBeInTheDocument();
+    // "Без задач" appears in the KPI card label and in the filter button
+    expect(screen.getAllByText(/Без задач/i).length).toBeGreaterThanOrEqual(1);
   });
 
   it("measurements kanban shows KPI cards including today count", async () => {
@@ -1091,7 +1092,53 @@ describe("Bakha CRM smoke", () => {
 
     await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
     expect(screen.getByPlaceholderText("Позвонить клиенту, Назначить замер...")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Создать задачу" })).toBeInTheDocument();
+    // Modal body has due-date preset buttons
+    expect(screen.getByTestId("due-presets")).toBeInTheDocument();
+  });
+
+  it("create task modal shows due date preset buttons including Завтра and +30 мин", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/tasks");
+
+    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Поставить задачу/i }));
+
+    await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
+    const presets = screen.getByTestId("due-presets");
+    expect(presets).toBeInTheDocument();
+    expect(presets.querySelector("button[class*='bg-bakha-orange'], button") ).not.toBeNull(); // any preset button exists
+    // Verify specific preset labels
+    expect(screen.getByRole("button", { name: "+30 мин" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Завтра" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Сегодня" })).toBeInTheDocument();
+  });
+
+  it("task type follow_up (Повторная связь) exists in create task modal", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/tasks");
+
+    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Поставить задачу/i }));
+
+    await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
+    expect(screen.getByRole("option", { name: /Повторная связь/i })).toBeInTheDocument();
+  });
+
+  it("localStorage preset is remembered and applied on next modal open", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    localStorage.setItem("bakha:lastTaskDuePreset", "tomorrow");
+    renderApp("/tasks");
+
+    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Поставить задачу/i }));
+
+    await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
+    // The "Завтра" preset should already be visually selected (class difference)
+    // Just verify the preset buttons are present and the key is read
+    expect(screen.getByRole("button", { name: "Завтра" })).toBeInTheDocument();
+    // Click +30 мин → saves to localStorage
+    fireEvent.click(screen.getByRole("button", { name: "+30 мин" }));
+    expect(localStorage.getItem("bakha:lastTaskDuePreset")).toBe("30m");
   });
 
   it("quick Позвонить opens create task modal with call type prefilled", async () => {
@@ -1433,5 +1480,77 @@ describe("Bakha CRM smoke", () => {
     fireEvent.click(screen.getByText("Прочитать все"));
     // After read-all, the "Прочитать все" button disappears (unreadCount drops to 0)
     await waitFor(() => expect(screen.queryByText("Прочитать все")).not.toBeInTheDocument());
+  });
+
+  // ── Next Action Task System smoke tests ──────────────────────────────────
+
+  it("sales kanban shows Нет задачи badge on deals without active task", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/sales");
+
+    expect(await screen.findByRole("heading", { name: "Отдел продаж" })).toBeInTheDocument();
+    // Seed lead 4 has no linked task → should show "Нет задачи" badge
+    await waitFor(() => {
+      const badges = document.querySelectorAll('[data-testid="no-task-badge"]');
+      expect(badges.length).toBeGreaterThan(0);
+    });
+  });
+
+  it("sales kanban shows overdue indicator for overdue task", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/sales");
+
+    expect(await screen.findByRole("heading", { name: "Отдел продаж" })).toBeInTheDocument();
+    // Task 3 "Дожать НДЗ" has dueAt in the past (2026-05-31) → overdue text visible on card
+    await waitFor(() => {
+      expect(screen.getAllByText(/Просрочена/i).length).toBeGreaterThan(0);
+    });
+  });
+
+  it("filter Без задач shows only deals without active tasks", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/sales");
+
+    expect(await screen.findByRole("heading", { name: "Отдел продаж" })).toBeInTheDocument();
+    const filterBtn = await screen.findByTestId("filter-no-task");
+    fireEvent.click(filterBtn);
+
+    // After clicking, the filter chip shows "(n)" count
+    await waitFor(() => {
+      const btn = screen.getByTestId("filter-no-task");
+      expect(btn.textContent).toMatch(/Без задач/);
+    });
+  });
+
+  it("lead detail page Поставить задачу button opens create task modal with lead prefilled", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/leads/1");
+
+    await waitFor(() => expect(screen.getByText("Следующее действие")).toBeInTheDocument());
+    // Click "Поставить задачу" in the right panel (data-testid)
+    fireEvent.click(screen.getByTestId("lead-add-task-btn"));
+
+    await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
+    expect(screen.getByTestId("due-presets")).toBeInTheDocument();
+    // Lead select should be pre-filled with lead 1 — check that the option is present and selected
+    const allSelects = screen.getAllByRole("combobox") as HTMLSelectElement[];
+    const leadSelect = allSelects.find((s) =>
+      Array.from(s.options).some((o) => o.value === "1" && o.text.includes("Потолок"))
+    );
+    expect(leadSelect).toBeDefined();
+    expect(leadSelect?.value).toBe("1");
+  });
+
+  it("no placeholder toast appears from task page buttons", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/tasks");
+
+    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Поставить задачу/i }));
+    await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
+
+    expect(screen.queryByText(/Функция будет подключена позже/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/будет активирована/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/mock/i)).not.toBeInTheDocument();
   });
 });

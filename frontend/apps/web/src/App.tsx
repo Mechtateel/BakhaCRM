@@ -1768,12 +1768,18 @@ function KanbanPage({ pipelineCode, title }: { pipelineCode: "sales" | "measurem
   const [manager, setManager] = useState("all");
   const [source, setSource] = useState("all");
   const [stageFilter, setStageFilter] = useState("all");
+  const [filterNoTask, setFilterNoTask] = useState(false);
   const pipeline = pipelines.find((item) => item.code === pipelineCode);
   const columns = stages.filter((stage) => stage.pipelineId === pipeline?.id).sort((a, b) => a.sortOrder - b.sortOrder);
   const basePipelineLeads = leads.filter((item) => item.pipelineCode === pipelineCode);
   const pipelineLeads = basePipelineLeads.filter((item) => {
     const haystack = [item.id, item.amoId, item.leadNumber, item.title, item.contactName, item.contactPhone, item.address, item.source, item.responsibleName, item.paymentStatus].join(" ").toLowerCase();
-    return haystack.includes(query.toLowerCase()) && (manager === "all" || item.responsibleName === manager) && (source === "all" || item.source === source) && (stageFilter === "all" || item.stageName === stageFilter);
+    const matchesSearch = haystack.includes(query.toLowerCase());
+    const matchesManager = manager === "all" || item.responsibleName === manager;
+    const matchesSource = source === "all" || item.source === source;
+    const matchesStage = stageFilter === "all" || item.stageName === stageFilter;
+    const matchesNoTask = !filterNoTask || !tasks.some((t) => t.leadId === item.id && t.status !== "done");
+    return matchesSearch && matchesManager && matchesSource && matchesStage && matchesNoTask;
   });
   const managerOptions = Array.from(new Set(basePipelineLeads.map((item) => item.responsibleName).filter(Boolean))) as string[];
   const sourceOptions = Array.from(new Set(basePipelineLeads.map((item) => item.source)));
@@ -1906,6 +1912,19 @@ function KanbanPage({ pipelineCode, title }: { pipelineCode: "sales" | "measurem
           ))}
         </select>
       </div>
+      <div className="mb-2 flex items-center gap-2">
+        <button
+          data-testid="filter-no-task"
+          onClick={() => setFilterNoTask((v) => !v)}
+          className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition ${filterNoTask ? "bg-orange-500 text-white" : "bg-slate-100 text-slate-600 hover:bg-orange-50 hover:text-orange-600"}`}
+        >
+          <AlertCircle size={12} />
+          Без задач {filterNoTask && `(${pipelineLeads.length})`}
+        </button>
+        {filterNoTask && (
+          <span className="text-xs text-slate-400">Показаны сделки без активных задач</span>
+        )}
+      </div>
       <DndContext
         sensors={sensors}
         onDragStart={handleDragStart}
@@ -2017,12 +2036,21 @@ function LeadCard({
           </>
         )}
       </div>
-      <div className="mt-3 flex items-start gap-2 rounded-md bg-slate-50 px-2 py-2 text-xs text-slate-600">
-        <Clock size={14} className="mt-0.5 shrink-0 text-bakha-orange" />
-        <span className="min-w-0">
-          <span className="font-medium text-slate-800">Задача:</span> {nextTask ? `${nextTask.title}, ${formatDate(nextTask.dueAt)}` : "нет задачи"}
-        </span>
-      </div>
+      {nextTask ? (
+        <div className={`mt-3 flex items-start gap-2 rounded-md px-2 py-2 text-xs ${new Date(nextTask.dueAt) < new Date() ? "bg-red-50 text-red-700" : "bg-slate-50 text-slate-600"}`}>
+          <Clock size={14} className={`mt-0.5 shrink-0 ${new Date(nextTask.dueAt) < new Date() ? "text-red-500" : "text-bakha-orange"}`} />
+          <span className="min-w-0">
+            {new Date(nextTask.dueAt) < new Date() && <span className="mr-1 font-bold text-red-600">Просрочена:</span>}
+            <span className="font-medium">{nextTask.title}</span>
+            <span className="ml-1 text-[10px] opacity-75">{formatDate(nextTask.dueAt)}</span>
+          </span>
+        </div>
+      ) : (
+        <div className="mt-3 flex items-center gap-1.5 rounded-md border border-dashed border-orange-300 bg-orange-50 px-2 py-1.5 text-xs font-semibold text-orange-600" data-testid="no-task-badge">
+          <AlertCircle size={12} className="shrink-0" />
+          Нет задачи
+        </div>
+      )}
       <select
         className="mt-2 w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium text-slate-700 outline-none transition focus:border-bakha-orange"
         value={leadItem.stageId}
@@ -2277,6 +2305,9 @@ function LeadDetailPage() {
     priority: "normal",
     responsibleUserId: ""
   });
+  const [showCreateTask, setShowCreateTask] = useState(false);
+  const [showNoTaskBanner, setShowNoTaskBanner] = useState(false);
+  const prevStageIdRef = useRef<number | null>(null);
   const [leadSuggestions, setLeadSuggestions] = useState<AiSuggestionDraft[]>([]);
   const [leadConversation, setLeadConversation] = useState<{ id: number; aiPaused: boolean; aiPausedUntil?: string | null; aiPauseReason?: string | null } | null>(null);
   const [editingSuggestion, setEditingSuggestion] = useState<{ id: number; text: string } | null>(null);
@@ -2567,7 +2598,18 @@ function LeadDetailPage() {
   // ─── AmoCRM-style 3-column deal workspace ────────────────────────────────
   const nextTask = leadTasks.find((t) => t.status !== "done");
 
+  // Show "plan next action" banner when stage changes and no active task exists
+  useEffect(() => {
+    if (!leadItem) return;
+    const currentStage = leadItem.stageId;
+    if (prevStageIdRef.current !== null && prevStageIdRef.current !== currentStage && !nextTask) {
+      setShowNoTaskBanner(true);
+    }
+    prevStageIdRef.current = currentStage;
+  }, [leadItem?.stageId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
+    <>
     <div className="flex flex-1 min-h-0 overflow-hidden">
 
       {/* ── LEFT: compact deal info panel ─────────────────────────────────── */}
@@ -2744,6 +2786,29 @@ function LeadDetailPage() {
           </div>
           <WappiStateBadge wappi={wappi} />
         </div>
+
+        {/* No-task banner after stage change */}
+        {showNoTaskBanner && (
+          <div className="mx-4 mt-3 flex items-center gap-3 rounded-xl border border-orange-200 bg-orange-50 px-4 py-3">
+            <AlertCircle size={16} className="shrink-0 text-orange-500" />
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-orange-800">Запланируйте следующее действие</p>
+              <p className="text-xs text-orange-600">У сделки нет активной задачи после смены этапа</p>
+            </div>
+            <button
+              onClick={() => { setShowCreateTask(true); setShowNoTaskBanner(false); }}
+              className="rounded-lg bg-bakha-orange px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-orange-600"
+            >
+              Поставить задачу
+            </button>
+            <button
+              onClick={() => setShowNoTaskBanner(false)}
+              className="rounded-lg p-1 text-orange-400 transition hover:bg-orange-100"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
 
         {/* Event feed — scrollable */}
         <div className="flex-1 overflow-y-auto px-4 py-4">
@@ -3027,16 +3092,28 @@ function LeadDetailPage() {
         <div className="border-b border-slate-100 p-4">
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Следующее действие</p>
           {nextTask ? (
-            <div className="rounded-lg bg-slate-50 p-3">
-              <p className="text-sm font-semibold text-slate-900">{nextTask.title}</p>
-              <p className="mt-1 text-xs text-slate-500">{formatDate(nextTask.dueAt)} · {display(nextTask.assigneeName)}</p>
+            <div className={`rounded-lg p-3 ${new Date(nextTask.dueAt) < new Date() ? "bg-red-50 ring-1 ring-red-200" : "bg-slate-50"}`}>
+              <div className="flex items-start gap-2">
+                <span className="text-sm">{getTaskTypeDisplay(nextTask.type).split(" ")[0]}</span>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-slate-900">{nextTask.title}</p>
+                  <p className={`mt-0.5 text-xs ${new Date(nextTask.dueAt) < new Date() ? "font-semibold text-red-600" : "text-slate-500"}`}>
+                    {new Date(nextTask.dueAt) < new Date() ? "⚠ Просрочена · " : ""}{formatDate(nextTask.dueAt)}
+                    {nextTask.assigneeName ? ` · ${nextTask.assigneeName}` : ""}
+                  </p>
+                </div>
+              </div>
             </div>
           ) : (
-            <p className="text-sm text-slate-400">Нет активной задачи</p>
+            <div className="rounded-lg border border-dashed border-orange-300 bg-orange-50 p-3 text-center">
+              <p className="text-sm font-medium text-orange-700">Нет активной задачи</p>
+              <p className="mt-0.5 text-xs text-orange-500">Запланируйте следующее действие</p>
+            </div>
           )}
           <button
+            data-testid="lead-add-task-btn"
             className="mt-3 w-full rounded-lg bg-bakha-orange py-2 text-sm font-semibold text-white transition hover:bg-orange-600"
-            onClick={() => setActiveTab("Задачи")}
+            onClick={() => setShowCreateTask(true)}
           >
             Поставить задачу
           </button>
@@ -3056,7 +3133,7 @@ function LeadDetailPage() {
                 <MessageCircle size={14} /> WhatsApp
               </button>
             )}
-            <button className="flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 py-2 text-xs font-semibold text-slate-700 transition hover:border-bakha-orange hover:text-bakha-orange" onClick={() => setActiveTab("Задачи")}>
+            <button className="flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 py-2 text-xs font-semibold text-slate-700 transition hover:border-bakha-orange hover:text-bakha-orange" onClick={() => setShowCreateTask(true)}>
               <CheckSquare size={14} /> Задача
             </button>
             <button className="flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 py-2 text-xs font-semibold text-slate-700 transition hover:border-bakha-orange hover:text-bakha-orange" onClick={() => setActiveTab("Примечания")}>
@@ -3070,12 +3147,20 @@ function LeadDetailPage() {
           <div className="border-b border-slate-100 p-4">
             <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Задачи</p>
             <div className="space-y-2">
-              {leadTasks.slice(0, 3).map((t) => (
-                <div key={t.id} className="rounded-lg border border-slate-100 bg-slate-50 p-2.5">
-                  <p className="text-xs font-semibold text-slate-800">{t.title}</p>
-                  <p className="mt-0.5 text-[11px] text-slate-400">{formatDate(t.dueAt)}</p>
-                </div>
-              ))}
+              {leadTasks.slice(0, 3).map((t) => {
+                const overdue = t.status !== "done" && new Date(t.dueAt) < new Date();
+                return (
+                  <div key={t.id} className={`rounded-lg border p-2.5 ${overdue ? "border-red-100 bg-red-50" : "border-slate-100 bg-slate-50"}`}>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs">{getTaskTypeDisplay(t.type).split(" ")[0]}</span>
+                      <p className="text-xs font-semibold text-slate-800">{t.title}</p>
+                    </div>
+                    <p className={`mt-0.5 text-[11px] ${overdue ? "font-medium text-red-600" : "text-slate-400"}`}>
+                      {overdue ? "Просрочена · " : ""}{formatDate(t.dueAt)}
+                    </p>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
@@ -3113,6 +3198,21 @@ function LeadDetailPage() {
         </div>
       </aside>
     </div>
+
+    {showCreateTask && (
+      <CreateTaskModal
+        defaults={{
+          leadId: currentLead.id,
+          responsibleUserId: leadItem.responsibleId ?? undefined,
+        }}
+        onClose={() => setShowCreateTask(false)}
+        onCreated={() => {
+          setShowCreateTask(false);
+          void refresh();
+        }}
+      />
+    )}
+    </>
   );
 }
 
@@ -4582,8 +4682,52 @@ function TasksPage() {
   );
 }
 
+// ── Task type metadata ─────────────────────────────────────────────────────────
+const TASK_TYPES = [
+  { value: "call",            label: "Звонок",           emoji: "📞" },
+  { value: "message",         label: "Сообщение",        emoji: "💬" },
+  { value: "measurement",     label: "Замер",            emoji: "📐" },
+  { value: "installation",    label: "Монтаж",           emoji: "🔨" },
+  { value: "quote",           label: "КП",               emoji: "📄" },
+  { value: "follow_up",       label: "Повторная связь",  emoji: "🔄" },
+  { value: "meeting",         label: "Встреча",          emoji: "🤝" },
+  { value: "other",           label: "Другое",           emoji: "📌" },
+] as const;
+
+function getTaskTypeLabel(value: string): string {
+  return (TASK_TYPES as readonly { value: string; label: string; emoji: string }[]).find((t) => t.value === value)?.label ?? value;
+}
+function getTaskTypeDisplay(value: string): string {
+  const found = (TASK_TYPES as readonly { value: string; label: string; emoji: string }[]).find((t) => t.value === value);
+  return found ? `${found.emoji} ${found.label}` : value;
+}
+
+// ── Due date presets ──────────────────────────────────────────────────────────
+const DUE_PRESETS = [
+  { key: "15m",      label: "+15 мин",      fn: () => { const d = new Date(); d.setMinutes(d.getMinutes() + 15, 0, 0); return d; } },
+  { key: "30m",      label: "+30 мин",      fn: () => { const d = new Date(); d.setMinutes(d.getMinutes() + 30, 0, 0); return d; } },
+  { key: "1h",       label: "+1 час",       fn: () => { const d = new Date(); d.setHours(d.getHours() + 1, 0, 0, 0); return d; } },
+  { key: "today",    label: "Сегодня",      fn: () => { const d = new Date(); d.setHours(18, 0, 0, 0); return d; } },
+  { key: "tomorrow", label: "Завтра",       fn: () => { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(10, 0, 0, 0); return d; } },
+  { key: "week_end", label: "Конец недели", fn: () => { const d = new Date(); const day = d.getDay(); const diff = day === 0 ? 6 : 5 - day; d.setDate(d.getDate() + Math.max(1, diff)); d.setHours(18, 0, 0, 0); return d; } },
+  { key: "1week",    label: "Через неделю", fn: () => { const d = new Date(); d.setDate(d.getDate() + 7); d.setHours(10, 0, 0, 0); return d; } },
+];
+const PRESET_LS_KEY = "bakha:lastTaskDuePreset";
+
+function computeDueFromPreset(presetKey: string): string {
+  const preset = DUE_PRESETS.find((p) => p.key === presetKey);
+  if (!preset) return toInputDateTime(new Date().toISOString());
+  return toInputDateTime(preset.fn().toISOString());
+}
+
 // ── Create Task Modal ─────────────────────────────────────────────────────────
-type CreateTaskDefaults = { type?: string; title?: string; dueAt?: string };
+type CreateTaskDefaults = {
+  type?: string;
+  title?: string;
+  dueAt?: string;
+  leadId?: number | null;
+  responsibleUserId?: number | null;
+};
 
 function CreateTaskModal({
   defaults,
@@ -4597,20 +4741,29 @@ function CreateTaskModal({
   const { users, leads } = useCrm();
   const notify = useToast();
 
-  const defaultDueAt = () => {
-    if (defaults?.dueAt) return toInputDateTime(defaults.dueAt);
-    const d = new Date(); d.setMinutes(0, 0, 0); d.setHours(d.getHours() + 1);
-    return toInputDateTime(d.toISOString());
-  };
-
+  const savedPreset = localStorage.getItem(PRESET_LS_KEY) ?? "tomorrow";
+  const [selectedPreset, setSelectedPreset] = useState<string>(() => defaults?.dueAt ? "" : savedPreset);
   const [title, setTitle] = useState(defaults?.title ?? "");
   const [type, setType] = useState(defaults?.type ?? "call");
-  const [dueAt, setDueAt] = useState(defaultDueAt);
+  const [dueAt, setDueAt] = useState(() => {
+    if (defaults?.dueAt) return toInputDateTime(defaults.dueAt);
+    return computeDueFromPreset(savedPreset);
+  });
   const [priority, setPriority] = useState("normal");
-  const [responsibleUserId, setResponsibleUserId] = useState("");
-  const [leadId, setLeadId] = useState("");
+  const [responsibleUserId, setResponsibleUserId] = useState(() =>
+    defaults?.responsibleUserId ? String(defaults.responsibleUserId) : ""
+  );
+  const [leadId, setLeadId] = useState(() =>
+    defaults?.leadId ? String(defaults.leadId) : ""
+  );
   const [description, setDescription] = useState("");
   const [saving, setSaving] = useState(false);
+
+  function applyPreset(key: string) {
+    setSelectedPreset(key);
+    setDueAt(computeDueFromPreset(key));
+    localStorage.setItem(PRESET_LS_KEY, key);
+  }
 
   async function handleCreate() {
     if (!title.trim()) { notify("Укажите название задачи."); return; }
@@ -4653,7 +4806,7 @@ function CreateTaskModal({
           </button>
         </div>
         {/* Body */}
-        <div className="space-y-3 overflow-y-auto px-5 py-4 max-h-[70vh]">
+        <div className="space-y-3 overflow-y-auto px-5 py-4 max-h-[72vh]">
           {/* Title */}
           <div>
             <label className="mb-1 block text-xs font-semibold text-slate-500">Название задачи *</label>
@@ -4675,12 +4828,9 @@ function CreateTaskModal({
                 value={type}
                 onChange={(e) => setType(e.target.value)}
               >
-                <option value="call">📞 Звонок</option>
-                <option value="message">💬 Сообщение</option>
-                <option value="measurement">📐 Замер</option>
-                <option value="installation">🔨 Монтаж</option>
-                <option value="quote">📄 КП</option>
-                <option value="other">📌 Другое</option>
+                {TASK_TYPES.map((t) => (
+                  <option key={t.value} value={t.value}>{t.emoji} {t.label}</option>
+                ))}
               </select>
             </div>
             <div>
@@ -4696,28 +4846,43 @@ function CreateTaskModal({
               </select>
             </div>
           </div>
-          {/* Date + Assignee */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-500">Дата и время *</label>
-              <input
-                type="datetime-local"
-                className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:border-bakha-orange focus:ring-4 focus:ring-orange-100"
-                value={dueAt}
-                onChange={(e) => setDueAt(e.target.value)}
-              />
+          {/* Due date presets */}
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold text-slate-500">Срок выполнения</label>
+            <div className="mb-2 flex flex-wrap gap-1.5" data-testid="due-presets">
+              {DUE_PRESETS.map((p) => (
+                <button
+                  key={p.key}
+                  type="button"
+                  onClick={() => applyPreset(p.key)}
+                  className={`rounded-full px-2.5 py-1 text-xs font-semibold transition ${
+                    selectedPreset === p.key
+                      ? "bg-bakha-orange text-white"
+                      : "bg-slate-100 text-slate-600 hover:bg-orange-50 hover:text-bakha-orange"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
             </div>
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-500">Ответственный</label>
-              <select
-                className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-bakha-orange"
-                value={responsibleUserId}
-                onChange={(e) => setResponsibleUserId(e.target.value)}
-              >
-                <option value="">Не назначен</option>
-                {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-              </select>
-            </div>
+            <input
+              type="datetime-local"
+              className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:border-bakha-orange focus:ring-4 focus:ring-orange-100"
+              value={dueAt}
+              onChange={(e) => { setDueAt(e.target.value); setSelectedPreset(""); }}
+            />
+          </div>
+          {/* Assignee */}
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-500">Ответственный</label>
+            <select
+              className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-bakha-orange"
+              value={responsibleUserId}
+              onChange={(e) => setResponsibleUserId(e.target.value)}
+            >
+              <option value="">Не назначен</option>
+              {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+            </select>
           </div>
           {/* Lead */}
           <div>
@@ -4758,7 +4923,7 @@ function CreateTaskModal({
             disabled={saving}
             className="rounded-lg bg-bakha-orange px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-orange-500/20 transition hover:bg-orange-600 disabled:opacity-60"
           >
-            {saving ? "Создание..." : "Создать задачу"}
+            {saving ? "Создание..." : "Поставить задачу"}
           </button>
         </div>
       </div>
@@ -4856,13 +5021,6 @@ function DraggableTaskCard({
     if (isDragging) { preventNextClick.current = true; setSnoozeOpen(false); }
   }, [isDragging]);
 
-  const typeLabel: Record<string, string> = {
-    call: "📞 Звонок", message: "💬 Сообщение",
-    measurement: "📐 Замер", quote: "📄 КП",
-    meeting: "🤝 Встреча", other: "📌 Другое",
-    installation: "🔨 Монтаж",
-  };
-
   return (
     <div
       ref={setNodeRef}
@@ -4880,7 +5038,7 @@ function DraggableTaskCard({
         <p className="font-semibold leading-snug text-slate-950">{task.title}</p>
         <PriorityBadge priority={task.priority} />
       </div>
-      <p className="mt-1 text-[11px] text-slate-400">{typeLabel[task.type] ?? task.type}</p>
+      <p className="mt-1 text-[11px] text-slate-400">{getTaskTypeDisplay(task.type)}</p>
       <div className="mt-2.5 space-y-1 text-xs text-slate-500">
         {task.leadTitle ? <p className="truncate">Сделка: <span className="font-medium text-slate-700">{task.leadTitle}</span></p> : null}
         {task.client ? <p className="truncate">Клиент: <span className="font-medium text-slate-700">{task.client}</span></p> : null}
@@ -4963,11 +5121,10 @@ function TaskDetailModal({
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   });
 
-  const typeLabels: Record<string, string> = {
-    call: "Звонок", message: "Сообщение",
-    measurement: "Замер", quote: "КП",
-    meeting: "Встреча", other: "Другое",
-  };
+  // Use centralized TASK_TYPES for display (inline for quick access in this modal)
+  const typeLabels: Record<string, string> = Object.fromEntries(
+    TASK_TYPES.map((t) => [t.value, `${t.emoji} ${t.label}`])
+  );
 
   function handleSnoozeMins(mins: number) {
     const d = new Date(task.dueAt);
