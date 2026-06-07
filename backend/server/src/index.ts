@@ -20,6 +20,7 @@ import {
   aiActionLogs,
   aiEvents,
   aiSuggestions,
+  calendarConnections,
   calls,
   chatConversations,
   contacts,
@@ -2058,6 +2059,9 @@ app.post("/api/tasks", makeRequireAuth(MANAGER_UP), async (req, res) => {
 
   try {
     const actorId = actorFromLocals(res);
+    const repeatEnabled = Boolean(body.repeatEnabled);
+    const repeatMode = asNullableString(body.repeatMode) ?? undefined;
+    const repeatInterval = asNullableNumber(body.repeatInterval) ?? 1;
     const [inserted] = await db
       .insert(tasks)
       .values({
@@ -2069,6 +2073,9 @@ app.post("/api/tasks", makeRequireAuth(MANAGER_UP), async (req, res) => {
         type: asNullableString(body.type) ?? "call",
         priority: asNullableString(body.priority) ?? "normal",
         status: asNullableString(body.status) ?? "open",
+        repeatEnabled,
+        repeatMode,
+        repeatInterval,
         createdAt: nowIso(),
         updatedAt: nowIso()
       })
@@ -2120,6 +2127,9 @@ app.patch("/api/tasks/:id", makeRequireAuth(MANAGER_UP), async (req, res) => {
   if (typeof type === "string") updatePayload.type = type;
   if (typeof priority === "string") updatePayload.priority = priority;
   if (typeof status === "string") updatePayload.status = status;
+  if (body.repeatEnabled !== undefined) updatePayload.repeatEnabled = Boolean(body.repeatEnabled);
+  if (body.repeatMode !== undefined) updatePayload.repeatMode = asNullableString(body.repeatMode) ?? undefined;
+  if (body.repeatInterval !== undefined) updatePayload.repeatInterval = asNullableNumber(body.repeatInterval) ?? 1;
 
   try {
     const actorId = actorFromLocals(res);
@@ -2160,10 +2170,54 @@ app.post("/api/tasks/:id/complete", makeRequireAuth(MANAGER_UP), async (req, res
   }
 
   const completedAt = nowIso();
+  const actorId = actorFromLocals(res);
   await db.update(tasks).set({ status: "done", completedAt, updatedAt: completedAt }).where(eq(tasks.id, id));
-  await writeLeadHistory(existingTask.leadId, "task.completed", { taskId: id, title: existingTask.title, completedAt }, actorFromLocals(res));
+  await writeLeadHistory(existingTask.leadId, "task.completed", { taskId: id, title: existingTask.title, completedAt }, actorId);
+
+  // ── Recurrence: auto-create next task if repeat is enabled ────────────────
+  let nextTask: typeof tasks.$inferSelect | null = null;
+  if (existingTask.repeatEnabled && existingTask.repeatMode && existingTask.repeatMode !== "none") {
+    try {
+      const nextDue = computeNextDue(new Date(existingTask.dueAt), existingTask.repeatMode, existingTask.repeatInterval ?? 1);
+      const now = nowIso();
+      const [created] = await db.insert(tasks).values({
+        leadId: existingTask.leadId,
+        title: existingTask.title,
+        description: existingTask.description,
+        dueAt: nextDue.toISOString(),
+        assigneeId: existingTask.assigneeId,
+        type: existingTask.type,
+        priority: existingTask.priority,
+        status: "open",
+        repeatEnabled: existingTask.repeatEnabled,
+        repeatMode: existingTask.repeatMode,
+        repeatInterval: existingTask.repeatInterval,
+        createdAt: now,
+        updatedAt: now,
+      }).returning();
+      nextTask = created;
+      await writeLeadHistory(existingTask.leadId, "task.auto_created", { taskId: created.id, title: created.title, reason: "recurrence" }, actorId);
+      if (created.assigneeId) {
+        const dueStr = nextDue.toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" });
+        await createNotification({
+          userId: created.assigneeId,
+          actorId,
+          type: "task.assigned",
+          title: "Автоматически создана следующая задача",
+          body: `${created.title} — ${dueStr}`,
+          entityType: "task",
+          entityId: created.id,
+          link: created.leadId ? `/leads/${created.leadId}` : "/tasks",
+          dedupeKey: `task.recurrence:${created.id}`,
+        });
+      }
+    } catch (err) {
+      console.error("[RECURRENCE] Failed to create next task:", err instanceof Error ? err.message : err);
+    }
+  }
+
   const [updatedTask] = await db.select().from(tasks).where(eq(tasks.id, id));
-  res.json({ task: updatedTask });
+  res.json({ task: updatedTask, nextTask });
 });
 
 app.post("/api/tasks/:id/reopen", makeRequireAuth(MANAGER_UP), async (req, res) => {
@@ -3276,6 +3330,56 @@ async function ensureTaskAutomationSchema() {
   }
 }
 
+// ── Task Recurrence schema ──────────────────────────────────────────────────────
+
+async function ensureTaskRecurrenceSchema() {
+  for (const colDef of [
+    "repeat_enabled INTEGER NOT NULL DEFAULT 0",
+    "repeat_mode TEXT",
+    "repeat_interval INTEGER NOT NULL DEFAULT 1",
+  ]) {
+    try { await db.run(sql.raw(`ALTER TABLE tasks ADD COLUMN ${colDef}`)); } catch { /* already exists */ }
+  }
+}
+
+// ── Google Calendar schema ──────────────────────────────────────────────────────
+
+async function ensureCalendarSchema() {
+  try {
+    await db.run(sql.raw(`
+      CREATE TABLE IF NOT EXISTS calendar_connections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        provider TEXT NOT NULL DEFAULT 'google',
+        email TEXT,
+        status TEXT NOT NULL DEFAULT 'disconnected',
+        access_token TEXT,
+        refresh_token TEXT,
+        expires_at TEXT,
+        last_sync_at TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `));
+  } catch { /* already exists */ }
+}
+
+// ── Recurrence helpers ─────────────────────────────────────────────────────────
+
+function computeNextDue(oldDue: Date, mode: string, interval: number): Date {
+  const d = new Date(oldDue);
+  const n = Math.max(1, interval);
+  switch (mode) {
+    case "daily":       d.setDate(d.getDate() + n); break;
+    case "weekly":      d.setDate(d.getDate() + n * 7); break;
+    case "monthly":     d.setMonth(d.getMonth() + n); break;
+    case "yearly":      d.setFullYear(d.getFullYear() + n); break;
+    case "custom_days": d.setDate(d.getDate() + n); break;
+    default:            d.setDate(d.getDate() + 1);
+  }
+  return d;
+}
+
 // ── Automation engine ─────────────────────────────────────────────────────────
 
 async function runAutomationRules(
@@ -3358,6 +3462,121 @@ async function runAutomationRules(
   }
   return created;
 }
+
+// ── Calendar (Google sync shell) API ──────────────────────────────────────────
+
+app.get("/api/calendar/status", makeRequireAuth(), async (req, res) => {
+  const userId = actorFromLocals(res);
+  if (!userId) { res.status(401).json({ error: "Unauthorized" }); return; }
+  try {
+    const [conn] = await db.select().from(calendarConnections).where(
+      and(eq(calendarConnections.userId, userId), eq(calendarConnections.provider, "google"))
+    );
+    const googleConfigured = Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+    res.json({
+      connected: conn?.status === "connected",
+      email: conn?.email ?? null,
+      lastSyncAt: conn?.lastSyncAt ?? null,
+      googleConfigured,
+      message: googleConfigured
+        ? (conn?.status === "connected" ? "Подключено к Google Calendar" : "Google OAuth настроен. Нажмите «Подключить».")
+        : "Для синхронизации с Google Calendar необходимы GOOGLE_CLIENT_ID и GOOGLE_CLIENT_SECRET в .env",
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Calendar status check failed" });
+  }
+});
+
+app.post("/api/calendar/google/connect-start", makeRequireAuth(), async (_req, res) => {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const redirectUri = process.env.GOOGLE_REDIRECT_URI ?? `${process.env.APP_URL ?? "http://localhost:3001"}/api/calendar/google/callback`;
+  if (!clientId) {
+    res.status(400).json({ error: "Google OAuth не настроен. Добавьте GOOGLE_CLIENT_ID в .env." });
+    return;
+  }
+  const scope = encodeURIComponent("https://www.googleapis.com/auth/calendar.events openid email");
+  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${scope}&access_type=offline&prompt=consent`;
+  res.json({ authUrl });
+});
+
+app.get("/api/calendar/google/callback", async (req, res) => {
+  res.status(501).json({ error: "Google OAuth callback — не реализован в данной версии. Требуются реальные credentials." });
+});
+
+app.post("/api/calendar/google/disconnect", makeRequireAuth(), async (req, res) => {
+  const userId = actorFromLocals(res);
+  if (!userId) { res.status(401).json({ error: "Unauthorized" }); return; }
+  try {
+    await db.delete(calendarConnections).where(
+      and(eq(calendarConnections.userId, userId), eq(calendarConnections.provider, "google"))
+    );
+    res.json({ ok: true, message: "Отключено от Google Calendar." });
+  } catch {
+    res.status(500).json({ error: "Disconnect failed" });
+  }
+});
+
+app.post("/api/calendar/google/sync-now", makeRequireAuth(), async (req, res) => {
+  const userId = actorFromLocals(res);
+  if (!userId) { res.status(401).json({ error: "Unauthorized" }); return; }
+  const [conn] = await db.select().from(calendarConnections).where(
+    and(eq(calendarConnections.userId, userId), eq(calendarConnections.provider, "google"))
+  );
+  if (!conn || conn.status !== "connected") {
+    res.status(400).json({ error: "Сначала подключите Google Calendar." });
+    return;
+  }
+  res.json({ ok: true, message: "Синхронизация в реальном времени пока не реализована. Будет добавлена после получения Google credentials." });
+});
+
+// Bulk task actions
+app.post("/api/tasks/bulk-complete", makeRequireAuth(MANAGER_UP), async (req, res) => {
+  const body = req.body as { ids?: unknown };
+  const ids = Array.isArray(body.ids) ? (body.ids as unknown[]).map(Number).filter(Number.isFinite) : [];
+  if (!ids.length) { res.status(400).json({ error: "No task ids provided" }); return; }
+  const actorId = actorFromLocals(res);
+  const completedAt = nowIso();
+  const nextTasks: typeof tasks.$inferSelect[] = [];
+  try {
+    for (const id of ids) {
+      const [t] = await db.select().from(tasks).where(eq(tasks.id, id));
+      if (!t || t.status === "done") continue;
+      await db.update(tasks).set({ status: "done", completedAt, updatedAt: completedAt }).where(eq(tasks.id, id));
+      await writeLeadHistory(t.leadId, "task.completed", { taskId: id, title: t.title, completedAt, bulk: true }, actorId);
+      // Recurrence for bulk too
+      if (t.repeatEnabled && t.repeatMode && t.repeatMode !== "none") {
+        const nextDue = computeNextDue(new Date(t.dueAt), t.repeatMode, t.repeatInterval ?? 1);
+        const now = nowIso();
+        const [created] = await db.insert(tasks).values({ leadId: t.leadId, title: t.title, description: t.description, dueAt: nextDue.toISOString(), assigneeId: t.assigneeId, type: t.type, priority: t.priority, status: "open", repeatEnabled: t.repeatEnabled, repeatMode: t.repeatMode, repeatInterval: t.repeatInterval, createdAt: now, updatedAt: now }).returning();
+        nextTasks.push(created);
+      }
+    }
+    res.json({ ok: true, completed: ids.length, nextTasks });
+  } catch (err) {
+    res.status(500).json({ error: "Bulk complete failed" });
+  }
+});
+
+app.post("/api/tasks/bulk-assign", makeRequireAuth(MANAGER_UP), async (req, res) => {
+  const body = req.body as { ids?: unknown; assigneeId?: unknown };
+  const ids = Array.isArray(body.ids) ? (body.ids as unknown[]).map(Number).filter(Number.isFinite) : [];
+  const assigneeId = typeof body.assigneeId === "number" ? body.assigneeId : null;
+  if (!ids.length) { res.status(400).json({ error: "No task ids provided" }); return; }
+  const actorId = actorFromLocals(res);
+  const now = nowIso();
+  try {
+    for (const id of ids) {
+      await db.update(tasks).set({ assigneeId, updatedAt: now }).where(eq(tasks.id, id));
+      if (assigneeId) {
+        const [t] = await db.select().from(tasks).where(eq(tasks.id, id));
+        await createNotification({ userId: assigneeId, actorId, type: "task.assigned", title: "Вам назначили задачу (группой)", body: t?.title ?? "", entityType: "task", entityId: id, link: t?.leadId ? `/leads/${t.leadId}` : "/tasks", dedupeKey: `task.bulk.assigned:${id}:${assigneeId}:${now.slice(0, 13)}` });
+      }
+    }
+    res.json({ ok: true, updated: ids.length });
+  } catch (err) {
+    res.status(500).json({ error: "Bulk assign failed" });
+  }
+});
 
 // ── Task Types API ─────────────────────────────────────────────────────────────
 
@@ -3571,6 +3790,8 @@ async function main() {
   await ensureNotificationsSchema();
   await ensureTaskTypesSchema();
   await ensureTaskAutomationSchema();
+  await ensureTaskRecurrenceSchema();
+  await ensureCalendarSchema();
   logWappiStartupWarnings();
   logAiManagerStartupWarnings();
   // Run due-reminder check immediately, then every 60 s

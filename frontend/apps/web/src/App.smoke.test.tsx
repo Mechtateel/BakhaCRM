@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+﻿// @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -128,6 +128,23 @@ beforeEach(() => {
       }
       if (url.match(/\/api\/task-automation-rules\/\d+/) && method === "PATCH") {
         return jsonResponse({ rule: { id: 1, isActive: true } });
+      }
+      // Calendar
+      if (url === "/api/calendar/status" && method === "GET") {
+        return jsonResponse({ connected: false, email: null, lastSyncAt: null, googleConfigured: false, message: "Для синхронизации с Google Calendar необходимы GOOGLE_CLIENT_ID и GOOGLE_CLIENT_SECRET в .env" });
+      }
+      if (url === "/api/calendar/google/connect-start" && method === "POST") {
+        return jsonResponse({ error: "Google OAuth не настроен." });
+      }
+      if (url === "/api/calendar/google/disconnect" && method === "POST") {
+        return jsonResponse({ ok: true });
+      }
+      // Bulk task actions
+      if (url === "/api/tasks/bulk-complete" && method === "POST") {
+        return jsonResponse({ ok: true, completed: 1, nextTasks: [] });
+      }
+      if (url === "/api/tasks/bulk-assign" && method === "POST") {
+        return jsonResponse({ ok: true, updated: 1 });
       }
       return Promise.reject(new Error("API unavailable in smoke test"));
     })
@@ -1098,8 +1115,8 @@ describe("Bakha CRM smoke", () => {
     localStorage.setItem("bakha_token", "demo-token");
     renderApp("/tasks");
 
-    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
-    fireEvent.change(screen.getByPlaceholderText("Поиск по задаче, сделке, клиенту, lead id"), { target: { value: "Потолок в гостиную" } });
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText(/Поиск по задаче/i), { target: { value: "Потолок в гостиную" } });
     // Click card (not action button) → opens in-place detail modal, stays on /tasks
     fireEvent.click(screen.getAllByText("Потолок в гостиную")[0]);
 
@@ -1115,7 +1132,7 @@ describe("Bakha CRM smoke", () => {
     localStorage.setItem("bakha_token", "demo-token");
     renderApp("/tasks");
 
-    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Поставить задачу/i })).toBeInTheDocument();
   });
 
@@ -1123,7 +1140,7 @@ describe("Bakha CRM smoke", () => {
     localStorage.setItem("bakha_token", "demo-token");
     renderApp("/tasks");
 
-    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Поставить задачу/i }));
 
     await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
@@ -1136,7 +1153,7 @@ describe("Bakha CRM smoke", () => {
     localStorage.setItem("bakha_token", "demo-token");
     renderApp("/tasks");
 
-    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Поставить задачу/i }));
 
     await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
@@ -1153,11 +1170,11 @@ describe("Bakha CRM smoke", () => {
     localStorage.setItem("bakha_token", "demo-token");
     renderApp("/tasks");
 
-    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Поставить задачу/i }));
 
     await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
-    expect(screen.getByRole("option", { name: /Повторная связь/i })).toBeInTheDocument();
+    expect(screen.getAllByRole("option", { name: /Повторная связь/i }).length).toBeGreaterThanOrEqual(1);
   });
 
   it("localStorage preset is remembered and applied on next modal open", async () => {
@@ -1165,7 +1182,7 @@ describe("Bakha CRM smoke", () => {
     localStorage.setItem("bakha:lastTaskDuePreset", "tomorrow");
     renderApp("/tasks");
 
-    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Поставить задачу/i }));
 
     await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
@@ -1181,7 +1198,7 @@ describe("Bakha CRM smoke", () => {
     localStorage.setItem("bakha_token", "demo-token");
     renderApp("/tasks");
 
-    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
     // Use exact name "Позвонить" to match only the quick-action button (not the DND card div
     // whose accessible name contains the full card text including "Позвонить клиенту …")
     fireEvent.click(screen.getByRole("button", { name: "Позвонить" }));
@@ -1195,7 +1212,7 @@ describe("Bakha CRM smoke", () => {
     localStorage.setItem("bakha_token", "demo-token");
     renderApp("/tasks");
 
-    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Написать" }));
 
     await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
@@ -1207,7 +1224,7 @@ describe("Bakha CRM smoke", () => {
     localStorage.setItem("bakha_token", "demo-token");
     renderApp("/tasks");
 
-    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Назначить замер" }));
 
     await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
@@ -1219,7 +1236,7 @@ describe("Bakha CRM smoke", () => {
     localStorage.setItem("bakha_token", "demo-token");
     renderApp("/tasks");
 
-    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
     // Use exact aria-label "Отложить" to match the actual snooze button,
     // not the DND card div whose long accessible name also contains "Отложить".
     const snoozeBtns = await screen.findAllByRole("button", { name: "Отложить" });
@@ -1233,7 +1250,7 @@ describe("Bakha CRM smoke", () => {
     localStorage.setItem("bakha_token", "demo-token");
     renderApp("/tasks");
 
-    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
     // Click first Выполнить button on a card
     const completeBtn = (await screen.findAllByRole("button", { name: "Выполнить" }))[0];
     fireEvent.click(completeBtn);
@@ -1245,7 +1262,7 @@ describe("Bakha CRM smoke", () => {
     localStorage.setItem("bakha_token", "demo-token");
     renderApp("/tasks");
 
-    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
     // Seed task 1 has leadId=1 — verify a Сделка → link exists pointing to /leads/1
     const dealLinks = await screen.findAllByRole("link", { name: /Сделка/i });
     expect(dealLinks.length).toBeGreaterThan(0);
@@ -1257,7 +1274,7 @@ describe("Bakha CRM smoke", () => {
     localStorage.setItem("bakha_token", "demo-token");
     renderApp("/tasks");
 
-    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
 
     // Click "Позвонить" — must open modal, not show placeholder toast
     fireEvent.click(screen.getByRole("button", { name: "Позвонить" }));
@@ -1341,7 +1358,7 @@ describe("Bakha CRM smoke", () => {
     localStorage.setItem("bakha_token", "demo-token");
     renderApp("/tasks");
 
-    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Фильтры" }));
 
     // The filter panel renders (data-testid check)
@@ -1581,7 +1598,7 @@ describe("Bakha CRM smoke", () => {
     localStorage.setItem("bakha_token", "demo-token");
     renderApp("/tasks");
 
-    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Поставить задачу/i }));
     await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
 
@@ -1666,7 +1683,7 @@ describe("Bakha CRM smoke", () => {
     localStorage.setItem("bakha_token", "demo-token");
     renderApp("/tasks");
 
-    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Поставить задачу/i }));
     await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
     await waitFor(() => {
@@ -1675,5 +1692,111 @@ describe("Bakha CRM smoke", () => {
       const opts = Array.from((select as HTMLSelectElement).options).map((o) => o.text);
       expect(opts.some((o) => o.includes("Повторная связь"))).toBe(true);
     });
+  });
+
+  // ── Phase 2: Tasks view modes + recurrence + calendar settings ────────────
+
+  it("tasks page shows view mode switcher with kanban, list, calendar buttons", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/tasks");
+
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
+    expect(screen.getByTestId("view-mode-switcher")).toBeInTheDocument();
+    expect(screen.getByTestId("view-kanban")).toBeInTheDocument();
+    expect(screen.getByTestId("view-list")).toBeInTheDocument();
+    expect(screen.getByTestId("view-calendar")).toBeInTheDocument();
+  });
+
+  it("tasks page has filter bar with filter-mine, filter-overdue, filter-status controls", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/tasks");
+
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
+    expect(screen.getByTestId("tasks-filter-bar")).toBeInTheDocument();
+    expect(screen.getByTestId("filter-mine")).toBeInTheDocument();
+    expect(screen.getByTestId("filter-overdue")).toBeInTheDocument();
+    expect(screen.getByTestId("filter-status")).toBeInTheDocument();
+    expect(screen.getByTestId("filter-type")).toBeInTheDocument();
+  });
+
+  it("switching to list view renders task-list-view", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/tasks");
+
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("view-list"));
+    await waitFor(() => expect(screen.getByTestId("task-list-view")).toBeInTheDocument());
+  });
+
+  it("switching to calendar view renders task-calendar-view", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/tasks");
+
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("view-calendar"));
+    await waitFor(() => expect(screen.getByTestId("task-calendar-view")).toBeInTheDocument());
+  });
+
+  it("create task modal shows recurrence checkbox", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/tasks");
+
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Поставить задачу/i }));
+    await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
+    expect(screen.getByTestId("repeat-enabled-checkbox")).toBeInTheDocument();
+    expect(screen.getByText("После выполнения создать следующую задачу")).toBeInTheDocument();
+  });
+
+  it("enabling recurrence shows repeat mode select in task modal", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/tasks");
+
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Поставить задачу/i }));
+    await waitFor(() => expect(screen.getByTestId("repeat-enabled-checkbox")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId("repeat-enabled-checkbox"));
+    await waitFor(() => expect(screen.getByTestId("repeat-mode-select")).toBeInTheDocument());
+    const opts = Array.from((screen.getByTestId("repeat-mode-select") as HTMLSelectElement).options).map((o) => o.value);
+    expect(opts).toContain("weekly");
+    expect(opts).toContain("monthly");
+    expect(opts).toContain("yearly");
+    expect(opts).toContain("custom_days");
+  });
+
+  it("calendar settings page renders for admin without crashing", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    localStorage.setItem("bakha_user", JSON.stringify({ name: "Admin", role: "owner" }));
+    renderApp("/settings/calendar");
+
+    expect(await screen.findByRole("heading", { name: /Синхронизация календаря/i })).toBeInTheDocument();
+    expect(screen.getByTestId("calendar-settings-page")).toBeInTheDocument();
+  });
+
+  it("calendar settings shows google not configured message without credentials", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    localStorage.setItem("bakha_user", JSON.stringify({ name: "Admin", role: "owner" }));
+    renderApp("/settings/calendar");
+
+    expect(await screen.findByRole("heading", { name: /Синхронизация календаря/i })).toBeInTheDocument();
+    // The message and/or config hint both mention GOOGLE_CLIENT_ID — at least one should be present
+    await waitFor(() => expect(screen.getAllByText(/GOOGLE_CLIENT_ID/i).length).toBeGreaterThanOrEqual(1));
+  });
+
+  it("list view in tasks page shows bulk complete button when tasks are selected", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/tasks");
+
+    expect(await screen.findByRole("heading", { name: /Задачи/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("view-list"));
+    await waitFor(() => expect(screen.getByTestId("task-list-view")).toBeInTheDocument());
+    // Select a task in the list if present, otherwise just verify list renders
+    const checkboxes = screen.queryAllByRole("checkbox");
+    if (checkboxes.length > 1) {
+      fireEvent.click(checkboxes[1]);
+      await waitFor(() => expect(screen.getByTestId("bulk-action-bar")).toBeInTheDocument());
+      expect(screen.getByText(/Выполнить выбранные/i)).toBeInTheDocument();
+    }
   });
 });

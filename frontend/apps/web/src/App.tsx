@@ -115,6 +115,13 @@ type Task = {
   client?: string | null;
   assigneeId?: number | null;
   assigneeName?: string | null;
+  stageName?: string | null;
+  stageId?: number | null;
+  pipelineCode?: string | null;
+  /** Recurrence fields */
+  repeatEnabled?: boolean;
+  repeatMode?: string | null;
+  repeatInterval?: number | null;
 };
 type Integration = { id: number; code: string; name: string; status: string; configJson?: string | null };
 type AppNotification = {
@@ -408,6 +415,7 @@ export default function App() {
           <Route path="/settings/integrations/wappi" element={<WappiSettingsPage />} />
           <Route path="/settings/task-types" element={<TaskTypesSettingsPage />} />
           <Route path="/settings/automation" element={<AutomationSettingsPage />} />
+          <Route path="/settings/calendar" element={<CalendarSettingsPage />} />
           <Route path="/settings/system" element={<SystemStatusPage />} />
         </Route>
       </Route>
@@ -720,6 +728,7 @@ function AppShell({ children }: { children: React.ReactNode }) {
     { label: "Настройки", href: "/settings/users", icon: Settings, adminOnly: true },
     { label: "Типы задач", href: "/settings/task-types", icon: Tag, adminOnly: true },
     { label: "Автоматизация", href: "/settings/automation", icon: Zap, adminOnly: true },
+    { label: "Синхр. календаря", href: "/settings/calendar", icon: CalendarDays, adminOnly: true },
     { label: "Состояние системы", href: "/settings/system", icon: Activity, adminOnly: true }
   ];
   const navItems = allNavItems.filter((item) => !item.adminOnly || isAdminOrOwner);
@@ -4405,11 +4414,226 @@ function ChatsPage() {
   );
 }
 
+// ── Task list + calendar helpers ───────────────────────────────────────────────
+
+const VIEW_MODE_LS_KEY = "bakha:tasksViewMode";
+const TASKS_FILTER_LS_KEY = "bakha:tasksFilter";
+
+function TaskListView({
+  tasks: items,
+  onOpenDetail,
+  onComplete,
+  selectedIds,
+  onToggleSelect,
+}: {
+  tasks: Task[];
+  onOpenDetail: (t: Task) => void;
+  onComplete: (id: number) => void;
+  selectedIds: Set<number>;
+  onToggleSelect: (id: number) => void;
+}) {
+  if (!items.length) return <EmptyState title="Нет задач" text="Задачи по выбранным фильтрам не найдены." />;
+  return (
+    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm" data-testid="task-list-view">
+      <table className="w-full min-w-[640px] text-sm">
+        <thead className="border-b border-slate-100 bg-slate-50 text-left">
+          <tr>
+            <th className="w-8 px-3 py-2.5"><input type="checkbox" className="h-4 w-4 accent-bakha-orange" onChange={() => {}} /></th>
+            <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-400">Дата</th>
+            <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-400">Задача</th>
+            <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-400">Сделка / Клиент</th>
+            <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-400">Тип</th>
+            <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-400">Ответственный</th>
+            <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-400">Статус</th>
+            <th className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-400"></th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {items.map((t) => {
+            const overdue = t.status !== "done" && new Date(t.dueAt) < new Date();
+            return (
+              <tr
+                key={t.id}
+                className="cursor-pointer hover:bg-slate-50"
+                onClick={() => onOpenDetail(t)}
+              >
+                <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 accent-bakha-orange"
+                    checked={selectedIds.has(t.id)}
+                    onChange={() => onToggleSelect(t.id)}
+                  />
+                </td>
+                <td className={`px-3 py-2.5 text-xs font-medium ${overdue ? "text-red-600" : "text-slate-600"}`}>
+                  {new Date(t.dueAt).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                </td>
+                <td className="px-3 py-2.5">
+                  <p className="font-semibold text-slate-900">{t.title}</p>
+                  {t.description && <p className="mt-0.5 text-[11px] text-slate-400 line-clamp-1">{t.description}</p>}
+                </td>
+                <td className="px-3 py-2.5 text-xs text-slate-600">
+                  {t.leadTitle ? <p className="font-medium">{t.leadTitle}</p> : null}
+                  {t.client ? <p className="text-slate-400">{t.client}</p> : null}
+                  {!t.leadTitle && !t.client ? <span className="text-slate-300">—</span> : null}
+                </td>
+                <td className="px-3 py-2.5 text-xs">{getTaskTypeDisplay(t.type)}</td>
+                <td className="px-3 py-2.5 text-xs text-slate-600">{t.assigneeName ?? "—"}</td>
+                <td className="px-3 py-2.5">
+                  <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${t.status === "done" ? "bg-emerald-50 text-emerald-700" : overdue ? "bg-red-50 text-red-700" : "bg-orange-50 text-orange-700"}`}>
+                    {t.status === "done" ? "Выполнена" : overdue ? "Просрочена" : "В работе"}
+                  </span>
+                </td>
+                <td className="px-3 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
+                  {t.status !== "done" && (
+                    <button onClick={() => onComplete(t.id)} className="rounded-md bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-100">Выполнить</button>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TaskCalendarMonthView({
+  tasks: items,
+  onOpenDetail,
+}: {
+  tasks: Task[];
+  onOpenDetail: (t: Task) => void;
+}) {
+  const [viewDate, setViewDate] = useState(() => new Date());
+  const year = viewDate.getFullYear();
+  const month = viewDate.getMonth();
+
+  const firstDay = new Date(year, month, 1);
+  const lastDay = new Date(year, month + 1, 0);
+
+  // Grid starts on Monday (0=Mon…6=Sun)
+  const startOffset = (firstDay.getDay() + 6) % 7;
+  const totalCells = Math.ceil((startOffset + lastDay.getDate()) / 7) * 7;
+
+  const tasksByDay = new Map<string, Task[]>();
+  items.forEach((t) => {
+    const d = new Date(t.dueAt);
+    if (d.getFullYear() === year && d.getMonth() === month) {
+      const key = String(d.getDate());
+      if (!tasksByDay.has(key)) tasksByDay.set(key, []);
+      tasksByDay.get(key)!.push(t);
+    }
+  });
+
+  const monthLabel = firstDay.toLocaleString("ru-RU", { month: "long", year: "numeric" });
+  const dayNames = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+
+  return (
+    <div data-testid="task-calendar-view">
+      {/* Navigation */}
+      <div className="mb-3 flex items-center justify-between">
+        <button onClick={() => { const d = new Date(viewDate); d.setMonth(d.getMonth() - 1); setViewDate(d); }} className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium hover:border-bakha-orange hover:text-bakha-orange">←</button>
+        <div className="flex items-center gap-3">
+          <h3 className="text-base font-bold capitalize text-slate-800">{monthLabel}</h3>
+          <button onClick={() => setViewDate(new Date())} className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:border-bakha-orange">Сегодня</button>
+        </div>
+        <button onClick={() => { const d = new Date(viewDate); d.setMonth(d.getMonth() + 1); setViewDate(d); }} className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium hover:border-bakha-orange hover:text-bakha-orange">→</button>
+      </div>
+      {/* Grid */}
+      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="grid grid-cols-7 border-b border-slate-100 bg-slate-50">
+          {dayNames.map((d) => (
+            <div key={d} className="py-2 text-center text-[11px] font-semibold uppercase tracking-wide text-slate-400">{d}</div>
+          ))}
+        </div>
+        <div className="grid grid-cols-7">
+          {Array.from({ length: totalCells }, (_, i) => {
+            const dayNum = i - startOffset + 1;
+            const isValid = dayNum >= 1 && dayNum <= lastDay.getDate();
+            const today = new Date();
+            const isToday = isValid && dayNum === today.getDate() && month === today.getMonth() && year === today.getFullYear();
+            const dayTasks = isValid ? (tasksByDay.get(String(dayNum)) ?? []) : [];
+            return (
+              <div key={i} className={`min-h-[90px] border-b border-r border-slate-100 p-1.5 last:border-r-0 ${!isValid ? "bg-slate-50/50" : ""}`}>
+                {isValid && (
+                  <>
+                    <p className={`mb-1 h-6 w-6 flex items-center justify-center rounded-full text-xs font-semibold ${isToday ? "bg-bakha-orange text-white" : "text-slate-500"}`}>{dayNum}</p>
+                    <div className="space-y-0.5">
+                      {dayTasks.slice(0, 3).map((t) => (
+                        <button
+                          key={t.id}
+                          className="w-full truncate rounded px-1 py-0.5 text-left text-[10px] font-medium hover:opacity-80"
+                          style={{ background: t.status === "done" ? "#d1fae5" : new Date(t.dueAt) < new Date() ? "#fee2e2" : "#fff7ed", color: t.status === "done" ? "#065f46" : new Date(t.dueAt) < new Date() ? "#991b1b" : "#9a3412" }}
+                          onClick={() => onOpenDetail(t)}
+                          title={t.title}
+                        >
+                          {getTaskTypeDisplay(t.type)} {t.title}
+                        </button>
+                      ))}
+                      {dayTasks.length > 3 && (
+                        <p className="text-[10px] text-slate-400 pl-1">+{dayTasks.length - 3} ещё</p>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TasksPage() {
-  const { tasks, refresh } = useCrm();
+  const { tasks, users, refresh } = useCrm();
   const notify = useToast();
-  const [taskOverrides, setTaskOverrides] = useState<Record<number, Pick<Task, "status" | "dueAt">>>({});
+
+  // ── View mode ──────────────────────────────────────────────────────────────
+  const [viewMode, setViewMode] = useState<"kanban" | "list" | "calendar">(() => {
+    const saved = localStorage.getItem(VIEW_MODE_LS_KEY);
+    return (saved === "list" || saved === "calendar" ? saved : "kanban");
+  });
+
+  function switchView(mode: "kanban" | "list" | "calendar") {
+    setViewMode(mode);
+    localStorage.setItem(VIEW_MODE_LS_KEY, mode);
+  }
+
+  // ── Filters ────────────────────────────────────────────────────────────────
+  const currentUserId = (() => {
+    try { return (JSON.parse(localStorage.getItem("bakha_user") ?? "{}") as { id?: number }).id ?? null; } catch { return null; }
+  })();
   const [query, setQuery] = useState("");
+  const [filterMine, setFilterMine] = useState(false);
+  const [filterOverdueOnly, setFilterOverdueOnly] = useState(false);
+  const [filterStatus, setFilterStatus] = useState<"all" | "open" | "done">("all");
+  const [filterType, setFilterType] = useState("");
+  const [filterAssignee, setFilterAssignee] = useState("");
+
+  // ── Bulk selection ─────────────────────────────────────────────────────────
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [bulkSaving, setBulkSaving] = useState(false);
+
+  function toggleSelect(id: number) {
+    setSelectedIds((prev) => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s; });
+  }
+
+  async function bulkComplete() {
+    if (!selectedIds.size) return;
+    setBulkSaving(true);
+    try {
+      await apiJson<{ ok: boolean }>("/api/tasks/bulk-complete", { method: "POST", body: JSON.stringify({ ids: Array.from(selectedIds) }) });
+      await refresh();
+      setSelectedIds(new Set());
+      notify(`Выполнено ${selectedIds.size} задач.`);
+    } catch { notify("Ошибка при выполнении."); }
+    setBulkSaving(false);
+  }
+
+  // ── Task override (optimistic) ─────────────────────────────────────────────
+  const [taskOverrides, setTaskOverrides] = useState<Record<number, Pick<Task, "status" | "dueAt">>>({});
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [activeDragTask, setActiveDragTask] = useState<Task | null>(null);
   const [pendingMove, setPendingMove] = useState<{ task: Task; defaultDate: Date } | null>(null);
@@ -4424,7 +4648,14 @@ function TasksPage() {
   const allTasks = tasks.map((taskItem) => ({ ...taskItem, ...taskOverrides[taskItem.id] }));
   const visibleTasks = allTasks.filter((taskItem) => {
     const haystack = [taskItem.id, taskItem.title, taskItem.description, taskItem.leadId, taskItem.leadTitle, taskItem.client, taskItem.assigneeName, taskItem.type, taskItem.priority, taskItem.status].join(" ").toLowerCase();
-    return haystack.includes(query.toLowerCase());
+    if (query && !haystack.includes(query.toLowerCase())) return false;
+    if (filterMine && currentUserId && taskItem.assigneeId !== currentUserId) return false;
+    if (filterOverdueOnly && !(taskItem.status !== "done" && new Date(taskItem.dueAt) < new Date())) return false;
+    if (filterStatus === "open" && taskItem.status === "done") return false;
+    if (filterStatus === "done" && taskItem.status !== "done") return false;
+    if (filterType && taskItem.type !== filterType) return false;
+    if (filterAssignee && String(taskItem.assigneeId) !== filterAssignee) return false;
+    return true;
   });
   const columns = ["Просроченные", "Сегодня", "Завтра", "Будущие", "Выполненные"];
   const overdue = allTasks.filter((item) => taskBucket(item) === "Просроченные").length;
@@ -4560,107 +4791,167 @@ function TasksPage() {
 
   return (
     <>
-      <PageHeader title="Задачи" subtitle="Kanban по звонкам, замерам, КП и монтажам" action="Поставить задачу" onAction={() => openCreateTask()} />
+      <PageHeader title="Задачи" subtitle={`${viewMode === "kanban" ? "Канбан" : viewMode === "list" ? "Список" : "Календарь"} задач · ${visibleTasks.length} задач`} action="Поставить задачу" onAction={() => openCreateTask()} />
       <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <KpiCard icon={AlertTriangle} label="Просроченные" value={String(overdue)} caption="срочно обработать" tone="red" />
         <KpiCard icon={CalendarDays} label="Сегодня" value={String(today)} caption="в работе" tone="orange" />
         <KpiCard icon={CheckCircle2} label="Выполнено" value={String(done)} caption="закрытые задачи" tone="green" />
         <KpiCard icon={Sparkles} label="Высокий приоритет" value={String(high)} caption="важные касания" tone="slate" />
       </div>
-      <div className="mb-4 flex flex-wrap gap-2">
-        <button
-          className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-bakha-orange hover:text-bakha-orange"
-          onClick={() => {
-            const d = new Date(); d.setMinutes(0, 0, 0); d.setHours(d.getHours() + 1);
-            openCreateTask({ type: "call", title: "Позвонить клиенту", dueAt: d.toISOString() });
-          }}
-        >
-          <Phone size={18} /> Позвонить
+
+      {/* ── View switcher + quick actions ─────────────────────────────────── */}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        {/* View mode tabs */}
+        <div className="flex rounded-lg border border-slate-200 bg-white p-0.5 shadow-sm" data-testid="view-mode-switcher">
+          {(["kanban", "list", "calendar"] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => switchView(m)}
+              className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${viewMode === m ? "bg-bakha-orange text-white shadow" : "text-slate-600 hover:text-bakha-orange"}`}
+              data-testid={`view-${m}`}
+            >
+              {m === "kanban" ? "Канбан" : m === "list" ? "Список" : "Календарь"}
+            </button>
+          ))}
+        </div>
+        <div className="mx-1 h-5 w-px bg-slate-200" />
+        {/* Quick action buttons */}
+        <button className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:border-bakha-orange hover:text-bakha-orange"
+          onClick={() => { const d = new Date(); d.setMinutes(0, 0, 0); d.setHours(d.getHours() + 1); openCreateTask({ type: "call", title: "Позвонить клиенту", dueAt: d.toISOString() }); }}>
+          <Phone size={16} /> Позвонить
         </button>
-        <button
-          className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-bakha-orange hover:text-bakha-orange"
-          onClick={() => {
-            const d = new Date(); d.setMinutes(0, 0, 0); d.setHours(d.getHours() + 1);
-            openCreateTask({ type: "message", title: "Написать клиенту", dueAt: d.toISOString() });
-          }}
-        >
-          <MessageSquare size={18} /> Написать
+        <button className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:border-bakha-orange hover:text-bakha-orange"
+          onClick={() => { const d = new Date(); d.setMinutes(0, 0, 0); d.setHours(d.getHours() + 1); openCreateTask({ type: "message", title: "Написать клиенту", dueAt: d.toISOString() }); }}>
+          <MessageSquare size={16} /> Написать
         </button>
-        <button
-          className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-bakha-orange hover:text-bakha-orange"
-          onClick={() => {
-            const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(10, 0, 0, 0);
-            openCreateTask({ type: "measurement", title: "Назначить замер", dueAt: d.toISOString() });
-          }}
-        >
-          <Ruler size={18} /> Назначить замер
+        <button className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:border-bakha-orange hover:text-bakha-orange"
+          onClick={() => { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(10, 0, 0, 0); openCreateTask({ type: "measurement", title: "Назначить замер", dueAt: d.toISOString() }); }}>
+          <Ruler size={16} /> Назначить замер
         </button>
       </div>
-      <div className="mb-4 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={17} />
+
+      {/* ── Filter bar ────────────────────────────────────────────────────── */}
+      <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-3 shadow-sm" data-testid="tasks-filter-bar">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={15} />
           <input
-            className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2.5 pl-9 pr-3 text-sm outline-none transition focus:border-bakha-orange focus:bg-white focus:ring-4 focus:ring-orange-100"
-            placeholder="Поиск по задаче, сделке, клиенту, lead id"
+            className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-sm outline-none transition focus:border-bakha-orange focus:bg-white focus:ring-4 focus:ring-orange-100"
+            placeholder="Поиск по задаче, сделке, клиенту..."
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(e) => setQuery(e.target.value)}
           />
         </div>
+        <button onClick={() => setFilterMine((v) => !v)} className={`rounded-lg border px-3 py-2 text-xs font-semibold transition ${filterMine ? "border-bakha-orange bg-orange-50 text-bakha-orange" : "border-slate-200 bg-white text-slate-600 hover:border-bakha-orange"}`} data-testid="filter-mine">
+          Мои задачи
+        </button>
+        <button onClick={() => setFilterOverdueOnly((v) => !v)} className={`rounded-lg border px-3 py-2 text-xs font-semibold transition ${filterOverdueOnly ? "border-red-400 bg-red-50 text-red-700" : "border-slate-200 bg-white text-slate-600 hover:border-red-400"}`} data-testid="filter-overdue">
+          Просроченные
+        </button>
+        <select className="rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs font-semibold text-slate-600 outline-none focus:border-bakha-orange" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value as "all" | "open" | "done")} data-testid="filter-status">
+          <option value="all">Все статусы</option>
+          <option value="open">В работе</option>
+          <option value="done">Выполненные</option>
+        </select>
+        <select className="rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs font-semibold text-slate-600 outline-none focus:border-bakha-orange" value={filterType} onChange={(e) => setFilterType(e.target.value)} data-testid="filter-type">
+          <option value="">Все типы</option>
+          {TASK_TYPES.map((t) => <option key={t.value} value={t.value}>{t.emoji} {t.label}</option>)}
+        </select>
+        <select className="rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs font-semibold text-slate-600 outline-none focus:border-bakha-orange" value={filterAssignee} onChange={(e) => setFilterAssignee(e.target.value)} data-testid="filter-assignee">
+          <option value="">Все ответственные</option>
+          {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+        </select>
+        {(query || filterMine || filterOverdueOnly || filterStatus !== "all" || filterType || filterAssignee) && (
+          <button onClick={() => { setQuery(""); setFilterMine(false); setFilterOverdueOnly(false); setFilterStatus("all"); setFilterType(""); setFilterAssignee(""); }} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-500 hover:text-red-600">
+            Сбросить
+          </button>
+        )}
       </div>
-      <DndContext
-        sensors={sensors}
-        onDragStart={handleDragStart}
-        onDragEnd={handleDragEnd}
-        onDragCancel={() => setActiveDragTask(null)}
-      >
-        <div ref={tasksKanbanRef} className="horizontal-drag-scroll scrollbar-thin -mx-4 flex gap-3 overflow-x-auto px-4 pb-5 lg:-mx-6 lg:px-6">
-          {columns.map((column) => {
-            const items = visibleTasks.filter((taskItem) => taskBucket(taskItem) === column);
-            const visibleItems = items.slice(0, TASK_COLUMN_LIMIT);
-            return (
-              <DroppableTaskColumn
-                key={column}
-                column={column}
-                count={items.length}
-                isDragActive={activeDragTask !== null}
-              >
-                {visibleItems.map((taskItem) => (
-                  <DraggableTaskCard
-                    key={taskItem.id}
-                    task={taskItem}
-                    onOpenDetail={(t) => setSelectedTask(t)}
-                    onComplete={completeTask}
-                    onSnooze={(id, mode) => void snoozeTask(id, mode)}
-                  />
-                ))}
-                {items.length > TASK_COLUMN_LIMIT ? (
-                  <div className="rounded-lg border border-dashed border-slate-300 bg-white/80 p-3 text-center text-sm text-slate-500">
-                    Показано {TASK_COLUMN_LIMIT} из {items.length}. Уточните фильтры.
-                  </div>
-                ) : null}
-                {!items.length ? <EmptyState title="Нет задач" text="В этой колонке пока нет задач." /> : null}
-              </DroppableTaskColumn>
-            );
-          })}
+
+      {/* ── Bulk actions bar (visible when tasks are selected in list view) ─ */}
+      {selectedIds.size > 0 && viewMode === "list" && (
+        <div className="mb-3 flex items-center gap-3 rounded-xl border border-bakha-orange/30 bg-orange-50 px-4 py-2.5" data-testid="bulk-action-bar">
+          <span className="text-sm font-semibold text-bakha-orange">Выбрано: {selectedIds.size}</span>
+          <button onClick={() => void bulkComplete()} disabled={bulkSaving} className="rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-600 disabled:opacity-60">
+            {bulkSaving ? "..." : "Выполнить выбранные"}
+          </button>
+          <button onClick={() => setSelectedIds(new Set())} className="ml-auto text-xs text-slate-500 hover:text-red-600">Снять выбор</button>
         </div>
-        {/* Ghost card shown while dragging */}
-        <DragOverlay dropAnimation={null}>
-          {activeDragTask ? (
-            <div className="w-[280px] rotate-[0.5deg] opacity-90 shadow-2xl">
-              <div className="rounded-lg border border-bakha-orange bg-white p-3">
-                <div className="flex items-start justify-between gap-2">
-                  <p className="font-semibold text-slate-950">{activeDragTask.title}</p>
-                  <PriorityBadge priority={activeDragTask.priority} />
-                </div>
-                {activeDragTask.client ? (
-                  <p className="mt-2 truncate text-xs text-slate-500">{activeDragTask.client}</p>
-                ) : null}
-              </div>
+      )}
+      {/* ── Kanban view ──────────────────────────────────────────────────── */}
+      {viewMode === "kanban" && (
+        <>
+          <DndContext
+            sensors={sensors}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+            onDragCancel={() => setActiveDragTask(null)}
+          >
+            <div ref={tasksKanbanRef} className="horizontal-drag-scroll scrollbar-thin -mx-4 flex gap-3 overflow-x-auto px-4 pb-5 lg:-mx-6 lg:px-6">
+              {columns.map((column) => {
+                const items = visibleTasks.filter((taskItem) => taskBucket(taskItem) === column);
+                const visibleItems = items.slice(0, TASK_COLUMN_LIMIT);
+                return (
+                  <DroppableTaskColumn
+                    key={column}
+                    column={column}
+                    count={items.length}
+                    isDragActive={activeDragTask !== null}
+                  >
+                    {visibleItems.map((taskItem) => (
+                      <DraggableTaskCard
+                        key={taskItem.id}
+                        task={taskItem}
+                        onOpenDetail={(t) => setSelectedTask(t)}
+                        onComplete={completeTask}
+                        onSnooze={(id, mode) => void snoozeTask(id, mode)}
+                      />
+                    ))}
+                    {items.length > TASK_COLUMN_LIMIT ? (
+                      <div className="rounded-lg border border-dashed border-slate-300 bg-white/80 p-3 text-center text-sm text-slate-500">
+                        Показано {TASK_COLUMN_LIMIT} из {items.length}. Уточните фильтры.
+                      </div>
+                    ) : null}
+                    {!items.length ? <EmptyState title="Нет задач" text="В этой колонке пока нет задач." /> : null}
+                  </DroppableTaskColumn>
+                );
+              })}
             </div>
-          ) : null}
-        </DragOverlay>
-      </DndContext>
-      <FloatingHorizontalScrollbar scrollRef={tasksKanbanRef} />
+            <DragOverlay dropAnimation={null}>
+              {activeDragTask ? (
+                <div className="w-[280px] rotate-[0.5deg] opacity-90 shadow-2xl">
+                  <div className="rounded-lg border border-bakha-orange bg-white p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="font-semibold text-slate-950">{activeDragTask.title}</p>
+                      <PriorityBadge priority={activeDragTask.priority} />
+                    </div>
+                    {activeDragTask.client ? <p className="mt-2 truncate text-xs text-slate-500">{activeDragTask.client}</p> : null}
+                  </div>
+                </div>
+              ) : null}
+            </DragOverlay>
+          </DndContext>
+          <FloatingHorizontalScrollbar scrollRef={tasksKanbanRef} />
+        </>
+      )}
+
+      {/* ── List view ────────────────────────────────────────────────────── */}
+      {viewMode === "list" && (
+        <TaskListView
+          tasks={visibleTasks}
+          onOpenDetail={(t) => setSelectedTask(t)}
+          onComplete={completeTask}
+          selectedIds={selectedIds}
+          onToggleSelect={toggleSelect}
+        />
+      )}
+
+      {/* ── Calendar month view ──────────────────────────────────────────── */}
+      {viewMode === "calendar" && (
+        <TaskCalendarMonthView
+          tasks={visibleTasks}
+          onOpenDetail={(t) => setSelectedTask(t)}
+        />
+      )}
 
       {/* In-place task detail modal — opens on card click, stays on tasks page */}
       {selectedTask ? (
@@ -4785,6 +5076,9 @@ function CreateTaskModal({
     defaults?.leadId ? String(defaults.leadId) : ""
   );
   const [description, setDescription] = useState("");
+  const [repeatEnabled, setRepeatEnabled] = useState(false);
+  const [repeatMode, setRepeatMode] = useState("weekly");
+  const [repeatInterval, setRepeatInterval] = useState(1);
   const [saving, setSaving] = useState(false);
 
   function applyPreset(key: string) {
@@ -4808,6 +5102,9 @@ function CreateTaskModal({
           responsibleUserId: responsibleUserId ? Number(responsibleUserId) : null,
           leadId: leadId ? Number(leadId) : null,
           description: description.trim() || null,
+          repeatEnabled,
+          repeatMode: repeatEnabled ? repeatMode : "none",
+          repeatInterval: repeatEnabled ? repeatInterval : 1,
         }),
       });
       notify("Задача создана.");
@@ -4936,6 +5233,47 @@ function CreateTaskModal({
               value={description}
               onChange={(e) => setDescription(e.target.value)}
             />
+          </div>
+          {/* Recurrence */}
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <label className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-slate-700">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-bakha-orange"
+                checked={repeatEnabled}
+                onChange={(e) => setRepeatEnabled(e.target.checked)}
+                data-testid="repeat-enabled-checkbox"
+              />
+              После выполнения создать следующую задачу
+            </label>
+            {repeatEnabled && (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <select
+                  className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm outline-none focus:border-bakha-orange"
+                  value={repeatMode}
+                  onChange={(e) => setRepeatMode(e.target.value)}
+                  data-testid="repeat-mode-select"
+                >
+                  <option value="daily">Каждый день</option>
+                  <option value="weekly">Каждую неделю</option>
+                  <option value="monthly">Каждый месяц</option>
+                  <option value="yearly">Каждый год</option>
+                  <option value="custom_days">Через N дней</option>
+                </select>
+                {repeatMode === "custom_days" && (
+                  <input
+                    type="number"
+                    min={1}
+                    max={365}
+                    className="w-20 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm outline-none focus:border-bakha-orange"
+                    value={repeatInterval}
+                    onChange={(e) => setRepeatInterval(Math.max(1, Number(e.target.value)))}
+                    data-testid="repeat-interval-input"
+                  />
+                )}
+                <span className="text-xs text-slate-400">дней</span>
+              </div>
+            )}
           </div>
         </div>
         {/* Footer */}
@@ -7253,6 +7591,127 @@ function AutomationSettingsPage() {
           </div>
         </div>
       )}
+    </>
+  );
+}
+
+// ── Calendar Settings Page ────────────────────────────────────────────────────
+
+function CalendarSettingsPage() {
+  const notify = useToast();
+  const currentUser = JSON.parse(localStorage.getItem("bakha_user") ?? "{}") as { role?: string | null };
+  const [status, setStatus] = useState<{
+    connected: boolean;
+    email: string | null;
+    lastSyncAt: string | null;
+    googleConfigured: boolean;
+    message: string;
+  } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [disconnecting, setDisconnecting] = useState(false);
+
+  const isAdmin = currentUser?.role === "owner" || currentUser?.role === "admin";
+
+  useEffect(() => {
+    setLoading(true);
+    fetch("/api/calendar/status", { credentials: "include" })
+      .then((r) => r.ok ? r.json() as Promise<typeof status> : Promise.reject())
+      .then(setStatus)
+      .catch(() => setStatus(null))
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function handleConnect() {
+    try {
+      const data = await apiJson<{ authUrl?: string; error?: string }>("/api/calendar/google/connect-start", { method: "POST" });
+      if (data.authUrl) {
+        window.location.href = data.authUrl;
+      } else {
+        notify(data.error ?? "Ошибка инициализации подключения.");
+      }
+    } catch { notify("Не удалось начать подключение к Google."); }
+  }
+
+  async function handleDisconnect() {
+    setDisconnecting(true);
+    try {
+      await apiJson("/api/calendar/google/disconnect", { method: "POST" });
+      notify("Отключено от Google Calendar.");
+      setStatus((s) => s ? { ...s, connected: false, email: null } : s);
+    } catch { notify("Ошибка при отключении."); }
+    setDisconnecting(false);
+  }
+
+  if (!isAdmin) {
+    return (
+      <>
+        <PageHeader title="Синхронизация календаря" subtitle="Настройки Google Calendar" />
+        <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <p className="text-slate-500">Доступно только для администраторов.</p>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <PageHeader title="Синхронизация календаря" subtitle="Подключите Google Calendar для синхронизации задач" />
+      <div className="max-w-xl space-y-4" data-testid="calendar-settings-page">
+
+        {/* Status card */}
+        <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="mb-1 text-base font-bold text-slate-900">Google Calendar</h2>
+          {loading ? (
+            <p className="text-sm text-slate-400">Проверяем статус подключения...</p>
+          ) : status ? (
+            <>
+              <div className={`mb-3 flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium ${status.connected ? "bg-emerald-50 text-emerald-700" : "bg-slate-50 text-slate-600"}`}>
+                <span className={`h-2 w-2 rounded-full ${status.connected ? "bg-emerald-500" : "bg-slate-300"}`} />
+                {status.connected ? "Подключено" : "Не подключено"}
+                {status.email && <span className="ml-1 text-xs font-normal text-slate-500">({status.email})</span>}
+              </div>
+              <p className="mb-4 text-sm text-slate-500">{status.message}</p>
+              {status.lastSyncAt && (
+                <p className="mb-3 text-xs text-slate-400">Последняя синхронизация: {new Date(status.lastSyncAt).toLocaleString("ru-RU")}</p>
+              )}
+              {status.connected ? (
+                <button onClick={() => void handleDisconnect()} disabled={disconnecting} className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-100 disabled:opacity-60">
+                  {disconnecting ? "Отключение..." : "Отключить Google Calendar"}
+                </button>
+              ) : (
+                <button onClick={() => void handleConnect()} className={`rounded-lg px-4 py-2 text-sm font-semibold text-white shadow transition ${status.googleConfigured ? "bg-bakha-orange hover:bg-orange-600" : "cursor-not-allowed bg-slate-300"}`} disabled={!status.googleConfigured}>
+                  {status.googleConfigured ? "Подключить Google Calendar" : "Google OAuth не настроен"}
+                </button>
+              )}
+            </>
+          ) : (
+            <p className="text-sm text-red-500">Ошибка при проверке статуса подключения.</p>
+          )}
+        </div>
+
+        {/* Limitations info */}
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          <p className="mb-1 font-semibold">Важные ограничения</p>
+          <ul className="list-inside list-disc space-y-1 text-xs">
+            <li>Удаление задачи в CRM НЕ удаляет её из Google Calendar автоматически.</li>
+            <li>Реальная синхронизация требует GOOGLE_CLIENT_ID и GOOGLE_CLIENT_SECRET в .env.</li>
+            <li>В текущей версии — архитектурная заготовка (MVP shell). Полноценная синхронизация запланирована.</li>
+            <li>Неделя и день Calendar-view будут добавлены в следующей фазе.</li>
+          </ul>
+        </div>
+
+        {/* Config hint */}
+        {!status?.googleConfigured && (
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+            <p className="mb-2 font-semibold">Настройка Google OAuth</p>
+            <p className="text-xs">Добавьте в файл <code className="rounded bg-slate-200 px-1">.env</code>:</p>
+            <pre className="mt-2 overflow-x-auto rounded-lg bg-slate-800 p-3 text-xs text-green-400">{`GOOGLE_CLIENT_ID=your-client-id
+GOOGLE_CLIENT_SECRET=your-client-secret
+GOOGLE_REDIRECT_URI=http://localhost:3001/api/calendar/google/callback`}</pre>
+            <p className="mt-2 text-xs text-slate-400">Credentials получите в Google Cloud Console → API & Services → Credentials.</p>
+          </div>
+        )}
+      </div>
     </>
   );
 }

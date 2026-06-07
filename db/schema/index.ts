@@ -163,7 +163,25 @@ export const tasks = sqliteTable("tasks", {
   priority: text("priority").notNull().default("normal"),
   status: text("status").notNull().default("open"),
   completedAt: text("completed_at"),
+  /** Recurrence support — columns added via ensureTaskRecurrenceSchema() for existing DBs. */
+  repeatEnabled: integer("repeat_enabled", { mode: "boolean" }).notNull().default(false),
+  repeatMode: text("repeat_mode"),
+  repeatInterval: integer("repeat_interval").notNull().default(1),
   rawJson: text("raw_json"),
+  ...timestamps
+});
+
+/** Google Calendar (or other provider) connection per user. */
+export const calendarConnections = sqliteTable("calendar_connections", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id").notNull(),
+  provider: text("provider").notNull().default("google"),
+  email: text("email"),
+  status: text("status").notNull().default("disconnected"),
+  accessToken: text("access_token"),
+  refreshToken: text("refresh_token"),
+  expiresAt: text("expires_at"),
+  lastSyncAt: text("last_sync_at"),
   ...timestamps
 });
 
