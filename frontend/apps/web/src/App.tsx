@@ -150,6 +150,11 @@ type ChatConversation = {
   status: string;
   unreadCount: number;
   lastMessageAt?: string | null;
+  lastMessageText?: string | null;
+  lastMessageDirection?: string | null;
+  lastMessageSenderType?: string | null;
+  lastMessageStatus?: string | null;
+  needsReply?: boolean;
   aiPaused?: boolean;
   aiPausedUntil?: string | null;
   aiPauseReason?: string | null;
@@ -3358,6 +3363,22 @@ function WappiStateBadge({ wappi }: { wappi?: WappiStatus }) {
   return <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700">WAPPI включён для реальной отправки.</div>;
 }
 
+/** Returns a delivery status indicator for outgoing WAPPI messages. */
+function MsgStatusBadge({ status }: { status: string }) {
+  const cfg: Record<string, { symbol: string; cls: string; label: string }> = {
+    sent:       { symbol: "✓",  cls: "text-orange-200",  label: "отправлено" },
+    delivered:  { symbol: "✓✓", cls: "text-orange-200",  label: "доставлено" },
+    read:       { symbol: "✓✓", cls: "text-blue-300",    label: "прочитано"  },
+    failed:     { symbol: "✗",  cls: "text-red-300 font-bold", label: "ошибка доставки" },
+    local_only: { symbol: "⟳",  cls: "text-orange-200",  label: "только локально" },
+    received:   { symbol: "✓",  cls: "text-orange-200",  label: "отправлено" },
+    pending:    { symbol: "⋯",  cls: "text-orange-200",  label: "ожидает" },
+  };
+  const c = cfg[status];
+  if (!c) return <span className="text-orange-200">{status}</span>;
+  return <span className={c.cls} title={c.label}>{c.symbol}</span>;
+}
+
 function MessageList({ messages, compact = false }: { messages: CrmMessage[]; compact?: boolean }) {
   if (!messages.length) return <EmptyState title="Нет сообщений" text="История WAPPI по этой сделке пока пустая." />;
   return (
@@ -3366,10 +3387,20 @@ function MessageList({ messages, compact = false }: { messages: CrmMessage[]; co
         const outgoing = message.direction === "outgoing";
         return (
           <div key={message.id} className={`flex ${outgoing ? "justify-end" : "justify-start"}`}>
-            <div className={`max-w-[78%] rounded-lg px-3 py-2 ${outgoing ? "bg-bakha-orange text-white" : "border border-slate-200 bg-white text-slate-700"}`}>
+            <div className={`max-w-[78%] rounded-lg px-3 py-2 ${
+              outgoing
+                ? message.status === "failed"
+                  ? "bg-red-500 text-white"
+                  : "bg-bakha-orange text-white"
+                : "border border-slate-200 bg-white text-slate-700"
+            }`}>
               <p className="whitespace-pre-wrap text-sm">{display(message.text ?? message.body ?? message.mediaUrl)}</p>
               {message.mediaUrl ? <p className={`mt-1 text-xs ${outgoing ? "text-orange-100" : "text-slate-500"}`}>{message.mediaType ?? "media"}: {message.mediaUrl}</p> : null}
-              <p className={`mt-1 text-[11px] ${outgoing ? "text-orange-100" : "text-slate-400"}`}>{formatDate(message.createdAt ?? message.sentAt)} · {message.status}</p>
+              <p className={`mt-1 flex items-center gap-1 text-[11px] ${outgoing ? "text-orange-100" : "text-slate-400"}`}>
+                <span>{formatDate(message.createdAt ?? message.sentAt)}</span>
+                {outgoing && <MsgStatusBadge status={message.status} />}
+                {outgoing && message.status === "failed" && <span className="text-red-200">ошибка</span>}
+              </p>
             </div>
           </div>
         );
@@ -3510,14 +3541,16 @@ function ChatsPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Lightweight polling: refresh AI suggestions every 8s using focused endpoint when a conversation is selected.
-  // Full /api/chats is only loaded on mount and after user actions (send/approve/reject).
+  // Lightweight polling every 8s when a conversation is selected:
+  //   1. Refresh AI draft suggestions (focused endpoint — small payload)
+  //   2. Refresh conversation messages to pick up delivery/read status updates from WAPPI webhooks
   useEffect(() => {
     if (!selectedId) return;
     const convId = selectedId;
     const poll = () => {
       if (document.visibilityState !== "visible") return;
-      apiJson<{ suggestions: AiSuggestionDraft[]; aiManager?: { enabled: boolean; dryRun: boolean } }>(
+      // Suggestions
+      void apiJson<{ suggestions: AiSuggestionDraft[]; aiManager?: { enabled: boolean; dryRun: boolean } }>(
         `/api/ai/suggestions?conversationId=${convId}&status=draft`, { method: "GET" }
       )
         .then((payload) => {
@@ -3525,6 +3558,24 @@ function ChatsPage() {
             c.id === convId ? { ...c, aiSuggestions: payload.suggestions } : c
           ));
           if (payload.aiManager) setAiManager(payload.aiManager);
+        })
+        .catch(() => {});
+      // Messages — refresh statuses (delivered/read from WAPPI status webhooks)
+      void apiJson<{ messages: CrmMessage[]; hasMore: boolean }>(
+        `/api/conversations/${convId}/messages?limit=50`, { method: "GET" }
+      )
+        .then((payload) => {
+          // Merge: only update status fields of existing messages to avoid UI jump;
+          // also append any new messages that arrived since last load.
+          setConversationMessages((prev) => {
+            const prevIds = new Set(prev.map((m) => m.id));
+            const updated = prev.map((m) => {
+              const fresh = payload.messages.find((f) => f.id === m.id);
+              return fresh ? { ...m, status: fresh.status } : m;
+            });
+            const newMsgs = payload.messages.filter((m) => !prevIds.has(m.id));
+            return newMsgs.length ? [...updated, ...newMsgs] : updated;
+          });
         })
         .catch(() => {});
     };
@@ -3649,17 +3700,8 @@ function ChatsPage() {
   const filtered = conversations.filter((conversation) => {
     if (filter === "unread") return conversation.unreadCount > 0;
     if (filter === "closed") return conversation.status === "closed";
-    if (filter === "open") return conversation.status === "open";
-    if (filter === "no_reply") {
-      // "no reply" means the most recently loaded message for selected conv was from client
-      // For non-selected conversations we can't know without loading their messages, so show all
-      if (conversation.id === selectedId) {
-        const lastMsg = conversationMessages[conversationMessages.length - 1];
-        return lastMsg?.direction === "incoming";
-      }
-      return true; // include non-selected convs in the filter (no loaded messages to check)
-    }
-    return true;
+    if (filter === "needs_reply") return conversation.needsReply === true;
+    return true; // "all" — show everything
   });
   const selected = filtered.find((conversation) => conversation.id === selectedId) ?? filtered[0] ?? null;
   // Messages are loaded per-conversation via GET /api/conversations/:id/messages
@@ -3672,13 +3714,22 @@ function ChatsPage() {
       <div className="mb-4 flex flex-wrap gap-2">
         {[
           ["all", "Все"],
-          ["open", "Открытые"],
           ["unread", "Непрочитанные"],
-          ["no_reply", "Без ответа"],
+          ["needs_reply", "Требуют ответа"],
           ["closed", "Закрытые"]
         ].map(([value, label]) => (
           <button key={value} className={`rounded-lg border px-3 py-2 text-sm font-semibold ${filter === value ? "border-bakha-orange bg-orange-50 text-orange-700" : "border-slate-200 bg-white text-slate-600"}`} onClick={() => setFilter(value)}>
             {label}
+            {value === "unread" && conversations.filter((c) => c.unreadCount > 0).length > 0 && (
+              <span className="ml-1.5 rounded-full bg-bakha-orange px-1.5 py-0.5 text-[10px] font-bold text-white">
+                {conversations.filter((c) => c.unreadCount > 0).length}
+              </span>
+            )}
+            {value === "needs_reply" && conversations.filter((c) => c.needsReply).length > 0 && (
+              <span className="ml-1.5 rounded-full bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                {conversations.filter((c) => c.needsReply).length}
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -3700,13 +3751,30 @@ function ChatsPage() {
                   if (conversation.unreadCount > 0) markConversationRead(conversation.id);
                 }}>
                 <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-semibold text-slate-950">{display(conversation.contactName ?? conversation.phone)}</p>
-                    <p className="truncate text-xs text-slate-500">{display(conversation.leadTitle)}</p>
+                    {conversation.lastMessageText ? (
+                      <p className="truncate text-xs text-slate-500 mt-0.5">
+                        {conversation.lastMessageDirection === "outgoing" && <span className="mr-1 text-slate-400">↑</span>}
+                        {conversation.lastMessageText}
+                      </p>
+                    ) : (
+                      <p className="truncate text-xs text-slate-400 mt-0.5">{display(conversation.leadTitle)}</p>
+                    )}
                   </div>
-                  {conversation.unreadCount ? <span className="rounded-full bg-bakha-orange px-2 py-0.5 text-xs font-semibold text-white">{conversation.unreadCount}</span> : null}
+                  <div className="flex shrink-0 flex-col items-end gap-1">
+                    {conversation.unreadCount ? <span className="rounded-full bg-bakha-orange px-2 py-0.5 text-xs font-semibold text-white">{conversation.unreadCount}</span> : null}
+                    {conversation.needsReply && !conversation.unreadCount ? <span className="rounded-full bg-amber-400 px-2 py-0.5 text-[10px] font-semibold text-white">ответ</span> : null}
+                  </div>
                 </div>
-                <p className="mt-2 text-xs text-slate-500">{formatDate(conversation.lastMessageAt)} · {conversation.status}</p>
+                <div className="mt-1.5 flex items-center gap-1.5">
+                  <p className="text-xs text-slate-400">{formatDate(conversation.lastMessageAt)}</p>
+                  {conversation.lastMessageStatus && conversation.lastMessageDirection === "outgoing" && (
+                    <span className="text-[10px] text-slate-400">
+                      {conversation.lastMessageStatus === "read" ? "✓✓" : conversation.lastMessageStatus === "delivered" ? "✓✓" : conversation.lastMessageStatus === "sent" ? "✓" : conversation.lastMessageStatus === "failed" ? "✗" : ""}
+                    </span>
+                  )}
+                </div>
               </button>
             ))}
           </div>

@@ -3,7 +3,7 @@ import cors from "cors";
 import "dotenv/config";
 import express from "express";
 import { rateLimit } from "express-rate-limit";
-import { and, desc, eq, gte, isNull, lt, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, ne, sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { createDb } from "../../../db/client.js";
 import { getAmoImportStats, runAmoImport } from "./import/amoImportService.js";
@@ -210,10 +210,35 @@ function responseError(res: express.Response, status: number, error: string) {
   res.status(status).json({ error });
 }
 
+/**
+ * Finds a contact by phone number.
+ *
+ * Fast path: tries several common stored formats via indexed DB queries.
+ * Slow fallback: loads minimal contact rows and normalizes in-memory — handles
+ *   legacy AMO-imported contacts stored with non-standard phone formats.
+ */
 async function findContactByPhone(phone: string) {
   const normalizedPhone = normalizePhone(phone);
-  const contactRows = await db.select().from(contacts);
-  return contactRows.find((contact) => normalizePhone(contact.phone) === normalizedPhone) ?? null;
+  if (!normalizedPhone) return null;
+
+  // Fast path: indexed exact-match queries for the most common stored formats
+  const variants = [
+    normalizedPhone,           // 77011234567 (standard)
+    `+${normalizedPhone}`,     // +77011234567 (some AMO exports)
+    phone.trim()               // raw value as-is (might already be stored exactly)
+  ].filter((v, i, arr) => v && arr.indexOf(v) === i); // dedupe
+
+  for (const variant of variants) {
+    const [row] = await db.select().from(contacts).where(eq(contacts.phone, variant)).limit(1);
+    if (row) return row;
+  }
+
+  // Slow fallback: scan only phone column (avoids loading full rows), normalize in-memory
+  const phoneRows = await db.select({ id: contacts.id, phone: contacts.phone }).from(contacts);
+  const match = phoneRows.find((c) => normalizePhone(c.phone) === normalizedPhone);
+  if (!match) return null;
+  const [fullRow] = await db.select().from(contacts).where(eq(contacts.id, match.id)).limit(1);
+  return fullRow ?? null;
 }
 
 async function findPrimaryLeadByContact(contactId: number) {
@@ -1955,10 +1980,48 @@ app.get("/api/chats", async (_req, res) => {
     }
   }
 
-  const enrichedConversations = conversationRows.map((conv) => ({
-    ...conv,
-    aiSuggestions: suggestionsByConversation[conv.id] ?? []
-  }));
+  // Load last message per lead — single query using correlated subquery (no N+1)
+  const leadIds = conversationRows.map((c) => c.leadId).filter((id): id is number => id != null);
+  type LastMsgRow = { id: number; leadId: number | null; direction: string; senderType: string; text: string | null; status: string; createdAt: string | null };
+  let lastMessageByLead: Record<number, LastMsgRow> = {};
+  if (leadIds.length > 0) {
+    const lastMsgRows = await db
+      .select({
+        id: messages.id,
+        leadId: messages.leadId,
+        direction: messages.direction,
+        senderType: messages.senderType,
+        text: messages.text,
+        status: messages.status,
+        createdAt: messages.createdAt
+      })
+      .from(messages)
+      .where(
+        and(
+          inArray(messages.leadId, leadIds),
+          sql`messages.id = (SELECT MAX(id) FROM messages AS m2 WHERE m2.lead_id = messages.lead_id)`
+        )
+      );
+    for (const row of lastMsgRows) {
+      if (row.leadId != null) lastMessageByLead[row.leadId] = row as LastMsgRow;
+    }
+  }
+
+  const enrichedConversations = conversationRows.map((conv) => {
+    const lastMsg = conv.leadId != null ? lastMessageByLead[conv.leadId] : undefined;
+    const needsReply = lastMsg
+      ? lastMsg.direction === "incoming" && lastMsg.senderType === "client"
+      : false;
+    return {
+      ...conv,
+      lastMessageText: lastMsg?.text?.slice(0, 100) ?? null,
+      lastMessageDirection: lastMsg?.direction ?? null,
+      lastMessageSenderType: lastMsg?.senderType ?? null,
+      lastMessageStatus: lastMsg?.status ?? null,
+      needsReply,
+      aiSuggestions: suggestionsByConversation[conv.id] ?? []
+    };
+  });
 
   res.json({
     conversations: enrichedConversations,
@@ -2904,6 +2967,10 @@ async function ensureWappiSchema() {
       `CREATE UNIQUE INDEX IF NOT EXISTS messages_ext_id_unique_idx ON messages(external_message_id) WHERE external_message_id IS NOT NULL`
     ));
   } catch { /* index already exists */ }
+  // Fast contact lookup by phone
+  try {
+    await db.run(sql.raw(`CREATE INDEX IF NOT EXISTS contacts_phone_idx ON contacts(phone)`));
+  } catch { /* already exists */ }
 }
 
 async function main() {

@@ -285,3 +285,13 @@ Before staging with real credentials:
 | Active lead preference | Message attaches to active, not won lead | [ ] |
 | WAPPI test-connection: real | Panel shows "Подключено", profile status | [ ] |
 | Rollback: `DRY_RUN=true` | CRM still works, no real messages sent | [ ] |
+| **UI Phase 5 checks:** | | |
+| Outgoing message shows `✓` (sent) | Status indicator visible under bubble | [ ] |
+| Status webhook "delivered" → `✓✓` | Updates within 8s polling cycle | [ ] |
+| Status webhook "read" → `✓✓` (blue) | Updates within 8s polling cycle | [ ] |
+| Status webhook "failed" → `✗ ошибка` | Red bubble + ✗ indicator | [ ] |
+| Conversation list shows last message preview | 1-line truncated text in sidebar | [ ] |
+| `needsReply` badge shows "ответ" | When last message is incoming/client | [ ] |
+| "Требуют ответа" filter | Shows only conversations with `needsReply=true` | [ ] |
+| "Непрочитанные" filter with count badge | Orange badge with number | [ ] |
+| Fast contact lookup (no full-scan logged) | Server log: no "loading all contacts" | [ ] |
