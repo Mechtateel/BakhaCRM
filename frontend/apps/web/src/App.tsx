@@ -635,7 +635,7 @@ function AppShell({ children }: { children: React.ReactNode }) {
   const isLeadDetail = /^\/leads\/\d/.test(location.pathname);
 
   return (
-    <div className="min-h-screen bg-[#f5f6f8] lg:flex">
+    <div className={`bg-[#f5f6f8] lg:flex ${isLeadDetail ? "h-screen overflow-hidden" : "min-h-screen"}`}>
       <aside className={`fixed inset-y-0 left-0 z-20 hidden border-r border-white/10 bg-[#101010] text-white lg:block ${isLeadDetail ? "w-[64px] px-2 py-4" : "w-[248px] px-3 py-4"}`}>
         {/* Logo */}
         <Link to="/dashboard" title="BAKHA CRM" className={`flex items-center rounded-xl ${isLeadDetail ? "justify-center p-2" : "gap-3 px-2 py-2"}`}>
@@ -699,8 +699,8 @@ function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         )}
       </aside>
-      <div className={`min-w-0 flex-1 ${isLeadDetail ? "flex flex-col lg:pl-[64px]" : "lg:pl-[248px]"}`}>
-        <header className="sticky top-0 z-10 border-b border-slate-200 bg-white/95 px-4 py-3 shadow-sm shadow-slate-200/40 backdrop-blur lg:px-6">
+      <div className={`min-w-0 flex-1 ${isLeadDetail ? "flex flex-col min-h-0 overflow-hidden lg:pl-[64px]" : "lg:pl-[248px]"}`}>
+        <header className="shrink-0 sticky top-0 z-10 border-b border-slate-200 bg-white/95 px-4 py-3 shadow-sm shadow-slate-200/40 backdrop-blur lg:px-6">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
             <div className="flex min-w-0 items-center gap-3">
               <button className="rounded-lg border border-slate-200 p-2 text-slate-600 lg:hidden" aria-label="Меню" onClick={() => notify("Мобильное меню будет подключено позже. На desktop sidebar уже активен.")}>
@@ -2534,10 +2534,12 @@ function LeadDetailPage() {
           />
         </div>
 
-        {/* Tabbed composer: WAPPI chat | Notes | Tasks */}
-        <div className="shrink-0 border-t border-slate-200 bg-white">
-          {/* Tab bar */}
-          <div className="flex border-b border-slate-100 px-3">
+        {/* Tabbed composer: WAPPI chat | Notes | Tasks
+            max-h-[45vh] + flex-col keeps the composer capped so the chat input
+            is never pushed below the viewport regardless of how many AI cards show. */}
+        <div className="shrink-0 border-t border-slate-200 bg-white flex flex-col max-h-[45vh]">
+          {/* Tab bar — always visible, never scrolls */}
+          <div className="shrink-0 flex border-b border-slate-100 px-3">
             {(["Чат WAPPI", "Примечания", "Задачи"] as const).map((tab) => (
               <button
                 key={tab}
@@ -2549,184 +2551,191 @@ function LeadDetailPage() {
             ))}
           </div>
 
-          {/* Чат WAPPI */}
+          {/* Чат WAPPI — AI cards scroll, chat input stays fixed at bottom */}
           {activeTab !== "Примечания" && activeTab !== "Задачи" && (
-            <div className="p-3 space-y-2">
-              {/* AI status bar — compact, only when conversation linked */}
-              {leadConversation && (
-                <div className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 px-3 py-1.5">
-                  <div className="flex items-center gap-1.5">
-                    <Bot size={11} className={leadConversation.aiPaused ? "text-amber-500" : "text-emerald-500"} />
-                    <span className={`text-[11px] font-medium ${leadConversation.aiPaused ? "text-amber-600" : "text-emerald-600"}`}>
-                      {leadConversation.aiPaused ? "AI на паузе" : "AI включён"}
-                    </span>
-                    {leadConversation.aiPausedUntil && leadConversation.aiPaused && (() => {
-                      const until = new Date(leadConversation.aiPausedUntil!);
-                      if (until > new Date()) {
-                        const minLeft = Math.ceil((until.getTime() - Date.now()) / 60_000);
-                        return <span className="text-[10px] text-slate-400">({minLeft} мин)</span>;
-                      }
-                      return null;
-                    })()}
-                  </div>
-                  <div className="flex gap-1">
-                    {leadConversation.aiPaused ? (
-                      <button
-                        className="rounded px-2 py-0.5 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
-                        onClick={() => void resumeLeadAI()}
-                        disabled={leadAiPauseLoading}
-                      >
-                        Включить AI
-                      </button>
-                    ) : (
-                      <>
-                        <button
-                          className="rounded px-2 py-0.5 text-[10px] font-semibold text-amber-700 hover:bg-amber-50 disabled:opacity-50"
-                          onClick={() => void pauseLeadAI("30m")}
-                          disabled={leadAiPauseLoading}
-                        >
-                          Пауза 30 мин
-                        </button>
-                        <button
-                          className="rounded px-2 py-0.5 text-[10px] font-semibold text-slate-500 hover:bg-slate-100 disabled:opacity-50"
-                          onClick={() => void pauseLeadAI("off")}
-                          disabled={leadAiPauseLoading}
-                        >
-                          Выкл
-                        </button>
-                      </>
-                    )}
-                  </div>
+            <div className="flex min-h-0 flex-col overflow-hidden">
+              {/* Scrollable area: AI status bar + suggestion cards */}
+              {(leadConversation || leadSuggestions.filter((s) => s.status === "draft").length > 0) && (
+                <div className="overflow-y-auto px-3 pt-3 pb-2 space-y-2 border-b border-slate-100">
+                  {/* AI status bar — compact, only when conversation linked */}
+                  {leadConversation && (
+                    <div className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 px-3 py-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <Bot size={11} className={leadConversation.aiPaused ? "text-amber-500" : "text-emerald-500"} />
+                        <span className={`text-[11px] font-medium ${leadConversation.aiPaused ? "text-amber-600" : "text-emerald-600"}`}>
+                          {leadConversation.aiPaused ? "AI на паузе" : "AI включён"}
+                        </span>
+                        {leadConversation.aiPausedUntil && leadConversation.aiPaused && (() => {
+                          const until = new Date(leadConversation.aiPausedUntil!);
+                          if (until > new Date()) {
+                            const minLeft = Math.ceil((until.getTime() - Date.now()) / 60_000);
+                            return <span className="text-[10px] text-slate-400">({minLeft} мин)</span>;
+                          }
+                          return null;
+                        })()}
+                      </div>
+                      <div className="flex gap-1">
+                        {leadConversation.aiPaused ? (
+                          <button
+                            className="rounded px-2 py-0.5 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+                            onClick={() => void resumeLeadAI()}
+                            disabled={leadAiPauseLoading}
+                          >
+                            Включить AI
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              className="rounded px-2 py-0.5 text-[10px] font-semibold text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+                              onClick={() => void pauseLeadAI("30m")}
+                              disabled={leadAiPauseLoading}
+                            >
+                              Пауза 30 мин
+                            </button>
+                            <button
+                              className="rounded px-2 py-0.5 text-[10px] font-semibold text-slate-500 hover:bg-slate-100 disabled:opacity-50"
+                              onClick={() => void pauseLeadAI("off")}
+                              disabled={leadAiPauseLoading}
+                            >
+                              Выкл
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* AI draft suggestion cards */}
+                  {leadSuggestions.filter((s) => s.status === "draft").map((suggestion) => (
+                    <div key={suggestion.id} className="rounded-xl border border-violet-200 bg-violet-50 p-3">
+                      <div className="mb-2 flex items-center gap-1.5">
+                        <Bot size={13} className="text-violet-600" />
+                        <span className="text-xs font-semibold text-violet-700">AI предложил ответ</span>
+                        {suggestion.confidence !== null && suggestion.confidence !== undefined && (
+                          <span className="ml-auto rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-600">
+                            {Math.round(suggestion.confidence * 100)}%
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Edit mode */}
+                      {editingSuggestion?.id === suggestion.id ? (
+                        <div className="mb-2 space-y-1.5">
+                          <textarea
+                            className="w-full min-h-[72px] rounded-lg border border-violet-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-100"
+                            value={editingSuggestion.text}
+                            onChange={(e) => setEditingSuggestion({ id: suggestion.id, text: e.target.value })}
+                          />
+                          <div className="flex gap-1.5">
+                            <button
+                              className="flex items-center gap-1 rounded-lg bg-violet-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-violet-700 disabled:opacity-60"
+                              disabled={leadSuggestionAction[suggestion.id] === "saving"}
+                              onClick={() => void saveEditedSuggestion()}
+                            >
+                              {leadSuggestionAction[suggestion.id] === "saving" ? "Сохранение..." : "Сохранить"}
+                            </button>
+                            <button
+                              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                              onClick={() => setEditingSuggestion(null)}
+                            >
+                              Отмена
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="mb-2 rounded-lg bg-white px-3 py-2 text-sm text-slate-700 shadow-sm">{suggestion.replyText}</p>
+                      )}
+
+                      {/* Suggested CRM actions — read-only preview */}
+                      {suggestion.suggestedActionsJson && (() => {
+                        try {
+                          const actions = JSON.parse(suggestion.suggestedActionsJson) as Array<{ type?: string; payload?: Record<string, unknown> }>;
+                          if (!Array.isArray(actions) || actions.length === 0) return null;
+                          return (
+                            <div className="mb-2 rounded-lg border border-violet-100 bg-white/60 px-3 py-2 text-xs">
+                              <p className="mb-1 font-semibold text-violet-600">AI предложил действия:</p>
+                              <ul className="space-y-0.5 text-slate-600">
+                                {actions.map((action, i) => (
+                                  <li key={i} className="flex items-center gap-1.5">
+                                    <span className="h-1 w-1 shrink-0 rounded-full bg-violet-400" />
+                                    {action.type === "create_task" ? `Задача: «${String(action.payload?.title ?? "").slice(0, 50)}»`
+                                      : action.type === "set_stage" ? `Этап → «${String(action.payload?.stage ?? "")}»`
+                                      : action.type === "add_note" ? `Заметка: «${String(action.payload?.note ?? "").slice(0, 50)}»`
+                                      : action.type === "add_tag" ? `Тег: «${String(action.payload?.tag ?? "")}»`
+                                      : String(action.type ?? "действие")}
+                                  </li>
+                                ))}
+                              </ul>
+                              <p className="mt-1.5 text-slate-400">Будет доступно для применения после настройки правил</p>
+                            </div>
+                          );
+                        } catch { return null; }
+                      })()}
+
+                      {/* Action buttons */}
+                      {editingSuggestion?.id !== suggestion.id && (
+                        <div className="flex flex-wrap gap-1.5">
+                          <button
+                            className="flex items-center gap-1 rounded-lg bg-violet-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-violet-700 disabled:opacity-60"
+                            disabled={leadSuggestionAction[suggestion.id] === "approving"}
+                            onClick={() => void approveLeadSuggestion(suggestion.id)}
+                          >
+                            <Send size={11} />
+                            {leadSuggestionAction[suggestion.id] === "approving" ? "..." : "Отправить"}
+                          </button>
+                          <button
+                            className="flex items-center gap-1 rounded-lg border border-violet-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-violet-700 hover:bg-violet-50 disabled:opacity-60"
+                            onClick={() => setEditingSuggestion({ id: suggestion.id, text: suggestion.replyText ?? "" })}
+                          >
+                            <Pencil size={11} />
+                            Редактировать
+                          </button>
+                          <button
+                            className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:border-red-300 hover:text-red-600 disabled:opacity-60"
+                            disabled={leadSuggestionAction[suggestion.id] === "rejecting"}
+                            onClick={() => void rejectLeadSuggestion(suggestion.id)}
+                          >
+                            <X size={11} />
+                            {leadSuggestionAction[suggestion.id] === "rejecting" ? "..." : "Отклонить"}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
                 </div>
               )}
 
-              {/* AI draft suggestion cards */}
-              {leadSuggestions.filter((s) => s.status === "draft").map((suggestion) => (
-                <div key={suggestion.id} className="rounded-xl border border-violet-200 bg-violet-50 p-3">
-                  <div className="mb-2 flex items-center gap-1.5">
-                    <Bot size={13} className="text-violet-600" />
-                    <span className="text-xs font-semibold text-violet-700">AI предложил ответ</span>
-                    {suggestion.confidence !== null && suggestion.confidence !== undefined && (
-                      <span className="ml-auto rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-600">
-                        {Math.round(suggestion.confidence * 100)}%
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Edit mode */}
-                  {editingSuggestion?.id === suggestion.id ? (
-                    <div className="mb-2 space-y-1.5">
-                      <textarea
-                        className="w-full min-h-[72px] rounded-lg border border-violet-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-100"
-                        value={editingSuggestion.text}
-                        onChange={(e) => setEditingSuggestion({ id: suggestion.id, text: e.target.value })}
-                      />
-                      <div className="flex gap-1.5">
-                        <button
-                          className="flex items-center gap-1 rounded-lg bg-violet-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-violet-700 disabled:opacity-60"
-                          disabled={leadSuggestionAction[suggestion.id] === "saving"}
-                          onClick={() => void saveEditedSuggestion()}
-                        >
-                          {leadSuggestionAction[suggestion.id] === "saving" ? "Сохранение..." : "Сохранить"}
-                        </button>
-                        <button
-                          className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50"
-                          onClick={() => setEditingSuggestion(null)}
-                        >
-                          Отмена
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="mb-2 rounded-lg bg-white px-3 py-2 text-sm text-slate-700 shadow-sm">{suggestion.replyText}</p>
-                  )}
-
-                  {/* Suggested CRM actions — read-only preview */}
-                  {suggestion.suggestedActionsJson && (() => {
-                    try {
-                      const actions = JSON.parse(suggestion.suggestedActionsJson) as Array<{ type?: string; payload?: Record<string, unknown> }>;
-                      if (!Array.isArray(actions) || actions.length === 0) return null;
-                      return (
-                        <div className="mb-2 rounded-lg border border-violet-100 bg-white/60 px-3 py-2 text-xs">
-                          <p className="mb-1 font-semibold text-violet-600">AI предложил действия:</p>
-                          <ul className="space-y-0.5 text-slate-600">
-                            {actions.map((action, i) => (
-                              <li key={i} className="flex items-center gap-1.5">
-                                <span className="h-1 w-1 shrink-0 rounded-full bg-violet-400" />
-                                {action.type === "create_task" ? `Задача: «${String(action.payload?.title ?? "").slice(0, 50)}»`
-                                  : action.type === "set_stage" ? `Этап → «${String(action.payload?.stage ?? "")}»`
-                                  : action.type === "add_note" ? `Заметка: «${String(action.payload?.note ?? "").slice(0, 50)}»`
-                                  : action.type === "add_tag" ? `Тег: «${String(action.payload?.tag ?? "")}»`
-                                  : String(action.type ?? "действие")}
-                              </li>
-                            ))}
-                          </ul>
-                          <p className="mt-1.5 text-slate-400">Будет доступно для применения после настройки правил</p>
-                        </div>
-                      );
-                    } catch { return null; }
-                  })()}
-
-                  {/* Action buttons */}
-                  {editingSuggestion?.id !== suggestion.id && (
-                    <div className="flex flex-wrap gap-1.5">
-                      <button
-                        className="flex items-center gap-1 rounded-lg bg-violet-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-violet-700 disabled:opacity-60"
-                        disabled={leadSuggestionAction[suggestion.id] === "approving"}
-                        onClick={() => void approveLeadSuggestion(suggestion.id)}
-                      >
-                        <Send size={11} />
-                        {leadSuggestionAction[suggestion.id] === "approving" ? "..." : "Отправить"}
-                      </button>
-                      <button
-                        className="flex items-center gap-1 rounded-lg border border-violet-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-violet-700 hover:bg-violet-50 disabled:opacity-60"
-                        onClick={() => setEditingSuggestion({ id: suggestion.id, text: suggestion.replyText ?? "" })}
-                      >
-                        <Pencil size={11} />
-                        Редактировать
-                      </button>
-                      <button
-                        className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:border-red-300 hover:text-red-600 disabled:opacity-60"
-                        disabled={leadSuggestionAction[suggestion.id] === "rejecting"}
-                        onClick={() => void rejectLeadSuggestion(suggestion.id)}
-                      >
-                        <X size={11} />
-                        {leadSuggestionAction[suggestion.id] === "rejecting" ? "..." : "Отклонить"}
-                      </button>
-                    </div>
-                  )}
+              {/* Chat input — shrink-0 footer, always visible */}
+              <div className="shrink-0 p-3 space-y-1.5">
+                <div className="flex items-center gap-2 text-xs text-slate-500">
+                  <MessageCircle size={13} />
+                  <span>Чат для {display(leadItem.contactName)}</span>
+                  <span className="ml-auto rounded-full border border-slate-200 px-2 py-0.5 font-semibold">WAPPI</span>
                 </div>
-              ))}
-
-              {/* Chat input */}
-              <div className="flex items-center gap-2 text-xs text-slate-500 pt-1">
-                <MessageCircle size={13} />
-                <span>Чат для {display(leadItem.contactName)}</span>
-                <span className="ml-auto rounded-full border border-slate-200 px-2 py-0.5 font-semibold">WAPPI</span>
-              </div>
-              <div className="flex gap-2">
-                <input
-                  className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-bakha-orange focus:bg-white focus:ring-4 focus:ring-orange-100"
-                  placeholder="Введите текст..."
-                  value={chatMessage}
-                  onChange={(e) => setChatMessage(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendWappiChatMessage(); } }}
-                />
-                <button
-                  className="flex items-center gap-1.5 rounded-lg bg-bakha-orange px-3 py-2 text-sm font-semibold text-white shadow-lg shadow-orange-500/20 transition hover:bg-orange-600 disabled:opacity-60"
-                  disabled={sendingMessage}
-                  onClick={sendWappiChatMessage}
-                >
-                  <Send size={15} />
-                  {sendingMessage ? "Отправка..." : "Отправить"}
-                </button>
+                <div className="flex gap-2">
+                  <input
+                    className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-bakha-orange focus:bg-white focus:ring-4 focus:ring-orange-100"
+                    placeholder="Введите текст..."
+                    value={chatMessage}
+                    onChange={(e) => setChatMessage(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendWappiChatMessage(); } }}
+                  />
+                  <button
+                    className="flex items-center gap-1.5 rounded-lg bg-bakha-orange px-3 py-2 text-sm font-semibold text-white shadow-lg shadow-orange-500/20 transition hover:bg-orange-600 disabled:opacity-60"
+                    disabled={sendingMessage}
+                    onClick={sendWappiChatMessage}
+                  >
+                    <Send size={15} />
+                    {sendingMessage ? "Отправка..." : "Отправить"}
+                  </button>
+                </div>
               </div>
             </div>
           )}
 
           {/* Примечания */}
           {activeTab === "Примечания" && (
-            <div className="p-3 space-y-2">
+            <div className="overflow-y-auto p-3 space-y-2">
               <textarea
                 className="min-h-16 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none transition focus:border-bakha-orange focus:ring-4 focus:ring-orange-100"
                 placeholder="Новая заметка"
@@ -2745,7 +2754,7 @@ function LeadDetailPage() {
 
           {/* Задачи */}
           {activeTab === "Задачи" && (
-            <div className="p-3 space-y-2">
+            <div className="overflow-y-auto p-3 space-y-2">
               <div className="grid gap-2 sm:grid-cols-2">
                 <input
                   className="rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-bakha-orange"
