@@ -2,7 +2,7 @@
 
 **Project:** BakhaCRM — Stretch Ceiling Company CRM  
 **Status:** Pre-launch checklist  
-**Last updated:** 2026-06-07
+**Last updated:** 2026-06-07 (updated after Phase 5: business workflow polish)
 
 ---
 
@@ -147,15 +147,41 @@
 
 ---
 
+## Internal CRM Functions Ready (No External Credentials Needed)
+
+| Function | Status |
+|---------|--------|
+| Dashboard + KPI cards | ✅ Ready |
+| Sales kanban + drag-drop + KPI | ✅ Ready |
+| Measurements kanban (real today count) | ✅ Ready |
+| Reserve page — post-payment deals | ✅ Ready (Phase 5) |
+| Installations page — setup schedule | ✅ Ready (Phase 5) |
+| Global search (leads + tasks) | ✅ Ready (Phase 5) |
+| Lead detail — 3-column workspace | ✅ Ready |
+| Task kanban + detail modal | ✅ Ready |
+| Analytics — tables and KPIs | ✅ Ready |
+| User management + RBAC | ✅ Ready |
+| Notes and task creation from lead | ✅ Ready |
+
+## Functions Requiring External Credentials
+
+| Function | Dependency | Status |
+|---------|-----------|--------|
+| WAPPI WhatsApp receive/send | WAPPI_TOKEN + webhook | 🟡 Dry-run only |
+| AI Manager suggestions | AI_MANAGER_BASE_URL + API_KEY | 🟡 Dry-run only |
+| onlinePBX calls | TELEPHONY credentials | 🟡 Dry-run only |
+| Real-time message delivery status | WAPPI status webhooks | 🟡 Polling only |
+
 ## Known Issues & Limitations
 
 | Issue | Status | Mitigation |
 |-------|--------|-----------|
-| AI suggestions not real-time | Pending | Manager refreshes ChatsPage; future: polling/SSE |
-| recentMessages empty in AI request | Pending | Load last 10 messages before AI call |
-| Suggested CRM actions not executed | Pending | Stored in DB; future phase |
-| Edit AI suggestion before send | Pending | Manager can copy text and send manually |
-| AI controls not in LeadDetailPage | Pending | Only in ChatsPage; future phase |
+| AI suggestions not real-time | Pending real AI credentials | 8s polling in place |
+| WAPPI payload shape unconfirmed | Pending WAPPI staging test | Heuristic detection in place |
+| Installation date uses measurementAt field | Pending schema update | Workaround — same field |
+| No material reservation items table | Pending Phase 6 | Reserve page shows lead-level view |
+| Analytics charts are decorative | Pending phase | Tables show real data |
+| AI controls require ChatsPage | Pending phase | Also in LeadDetailPage feed |
 
 ---
 

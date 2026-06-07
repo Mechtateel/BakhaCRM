@@ -2159,6 +2159,80 @@ app.post("/api/notes", makeRequireAuth(MANAGER_UP), async (req, res) => {
   }
 });
 
+/**
+ * GET /api/search?q=<query>
+ * Lightweight cross-entity search across leads, contacts, and tasks.
+ * Returns up to 15 leads, 8 contacts, and 8 tasks matching the query.
+ * No auth required — data already served by /api/bootstrap.
+ */
+app.get("/api/search", async (req, res) => {
+  const q = String(req.query.q ?? "").trim();
+  if (!q || q.length < 2) return res.json({ leads: [], contacts: [], tasks: [] });
+  const lq = q.toLowerCase();
+  const phoneQ = q.replace(/\D/g, "");
+
+  // Search leads (join primary contact for phone/name)
+  const leadRows = await db
+    .select({
+      id: leads.id,
+      title: leads.title,
+      leadNumber: leads.leadNumber,
+      source: leads.source,
+      status: leads.status,
+      budget: leads.budget,
+      address: leads.address,
+      pipelineCode: pipelines.code,
+      stageName: stages.name,
+      contactName: contacts.name,
+      contactPhone: contacts.phone
+    })
+    .from(leads)
+    .leftJoin(leadContacts, and(eq(leadContacts.leadId, leads.id), eq(leadContacts.isPrimary, true)))
+    .leftJoin(contacts, eq(contacts.id, leadContacts.contactId))
+    .leftJoin(pipelines, eq(pipelines.id, leads.pipelineId))
+    .leftJoin(stages, eq(stages.id, leads.stageId))
+    .limit(200);
+
+  const matchedLeads = leadRows.filter((l) => {
+    const hay = `${l.title ?? ""} ${l.leadNumber ?? ""} ${l.contactName ?? ""} ${l.address ?? ""} ${l.source ?? ""}`.toLowerCase();
+    const phoneMatch = phoneQ.length >= 4 && (l.contactPhone ?? "").replace(/\D/g, "").includes(phoneQ);
+    return hay.includes(lq) || phoneMatch;
+  }).slice(0, 15);
+
+  // Search contacts
+  const contactRows = await db
+    .select({ id: contacts.id, name: contacts.name, phone: contacts.phone, email: contacts.email })
+    .from(contacts)
+    .limit(200);
+
+  const matchedContacts = contactRows.filter((c) => {
+    const hay = `${c.name ?? ""} ${c.email ?? ""}`.toLowerCase();
+    const phoneMatch = phoneQ.length >= 4 && (c.phone ?? "").replace(/\D/g, "").includes(phoneQ);
+    return hay.includes(lq) || phoneMatch;
+  }).slice(0, 8);
+
+  // Search tasks
+  const taskRows = await db
+    .select({
+      id: tasks.id,
+      title: tasks.title,
+      description: tasks.description,
+      leadId: tasks.leadId,
+      status: tasks.status,
+      type: tasks.type,
+      dueAt: tasks.dueAt
+    })
+    .from(tasks)
+    .limit(200);
+
+  const matchedTasks = taskRows.filter((t) => {
+    const hay = `${t.title ?? ""} ${t.description ?? ""}`.toLowerCase();
+    return hay.includes(lq);
+  }).slice(0, 8);
+
+  return res.json({ leads: matchedLeads, contacts: matchedContacts, tasks: matchedTasks });
+});
+
 app.get("/api/dashboard", async (_req, res) => {
   const [{ totalBudget }] = await db.select({ totalBudget: sql<number>`sum(${leads.budget})` }).from(leads);
   const bootstrap = await getBootstrap();

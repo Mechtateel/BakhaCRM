@@ -15,6 +15,7 @@ import {
   CreditCard,
   FileText,
   Filter,
+  Hammer,
   Headphones,
   KanbanSquare,
   LayoutDashboard,
@@ -23,6 +24,7 @@ import {
   MessageCircle,
   MessageSquare,
   MoreHorizontal,
+  Package,
   PanelLeft,
   Paperclip,
   Pencil,
@@ -381,6 +383,8 @@ export default function App() {
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/sales" element={<KanbanPage pipelineCode="sales" title="Отдел продаж" />} />
           <Route path="/measurements" element={<KanbanPage pipelineCode="measurement" title="Замер" />} />
+          <Route path="/reserve" element={<ReservePage />} />
+          <Route path="/installations" element={<InstallationsPage />} />
           <Route path="/leads/:id" element={<LeadDetailPage />} />
           <Route path="/chats" element={<ChatsPage />} />
           <Route path="/tasks" element={<TasksPage />} />
@@ -580,6 +584,35 @@ function AppShell({ children }: { children: React.ReactNode }) {
   const { tasks, leads } = useCrm();
   const notify = useToast();
   const [globalSearch, setGlobalSearch] = useState("");
+  const [showSearchResults, setShowSearchResults] = useState(false);
+  const searchRef = useRef<HTMLDivElement>(null);
+
+  const searchResults = useMemo(() => {
+    const q = globalSearch.trim();
+    if (q.length < 2) return null;
+    const lq = q.toLowerCase();
+    const phoneQ = q.replace(/\D/g, "");
+    const matchedLeads = leads.filter((l) => {
+      const hay = `${l.title} ${l.leadNumber} ${l.contactName ?? ""} ${l.contactPhone ?? ""} ${l.address ?? ""} ${l.source}`.toLowerCase();
+      const phoneMatch = phoneQ.length >= 4 && (l.contactPhone ?? "").replace(/\D/g, "").includes(phoneQ);
+      return hay.includes(lq) || phoneMatch;
+    }).slice(0, 8);
+    const matchedTasks = tasks.filter((t) => {
+      return `${t.title} ${t.description ?? ""} ${t.client ?? ""}`.toLowerCase().includes(lq);
+    }).slice(0, 4);
+    return { leads: matchedLeads, tasks: matchedTasks, total: matchedLeads.length + matchedTasks.length };
+  }, [globalSearch, leads, tasks]);
+
+  // Close search results on outside click
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
+        setShowSearchResults(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
   const user = JSON.parse(localStorage.getItem("bakha_user") ?? "{\"name\":\"Баха Админ\",\"role\":\"owner\",\"roleTitle\":\"Владелец\"}") as { name: string; role?: string | null; roleTitle?: string };
   const isAdminOrOwner = user.role === "owner" || user.role === "admin";
 
@@ -587,7 +620,8 @@ function AppShell({ children }: { children: React.ReactNode }) {
     { label: "Рабочий стол", href: "/dashboard", icon: LayoutDashboard },
     { label: "Отдел продаж", href: "/sales", icon: KanbanSquare, badge: String(leads.filter((item) => item.pipelineCode === "sales").length) },
     { label: "Замер", href: "/measurements", icon: Ruler, badge: String(leads.filter((item) => item.pipelineCode === "measurement").length) },
-    { label: "Резерв", href: "/sales?reserve=1", icon: Archive },
+    { label: "Резерв", href: "/reserve", icon: Package, badge: String(leads.filter((item) => ["Предоплата", "Установка", "Полная оплата", "Остаток долг", "Сделан перерасчёт"].includes(item.stageName)).length) || undefined },
+    { label: "Монтаж", href: "/installations", icon: Hammer, badge: String(leads.filter((item) => item.stageName === "Установка").length) || undefined },
     { label: "Чаты", href: "/chats", icon: MessageCircle },
     { label: "Задачи", href: "/tasks", icon: CheckSquare, badge: String(tasks.filter((item) => item.status !== "done").length) },
     { label: "Аналитика", href: "/analytics", icon: BarChart3 },
@@ -672,17 +706,52 @@ function AppShell({ children }: { children: React.ReactNode }) {
               <button className="rounded-lg border border-slate-200 p-2 text-slate-600 lg:hidden" aria-label="Меню" onClick={() => notify("Мобильное меню будет подключено позже. На desktop sidebar уже активен.")}>
                 <PanelLeft size={20} />
               </button>
-              <div className="relative w-full min-w-0 sm:w-[430px]">
+              <div ref={searchRef} className="relative w-full min-w-0 sm:w-[430px]">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                 <input
                   className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-3 text-sm outline-none transition focus:border-bakha-orange focus:bg-white focus:ring-4 focus:ring-orange-100"
                   placeholder="Поиск по сделкам, клиентам, телефону"
                   value={globalSearch}
-                  onChange={(event) => setGlobalSearch(event.target.value)}
+                  onChange={(event) => { setGlobalSearch(event.target.value); setShowSearchResults(true); }}
+                  onFocus={() => setShowSearchResults(true)}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter") notify(globalSearch ? `Глобальный поиск по "${globalSearch}" работает в demo-режиме. Используйте поиск на kanban для фильтрации карточек.` : "Введите запрос для поиска.");
+                    if (event.key === "Escape") { setShowSearchResults(false); setGlobalSearch(""); }
                   }}
                 />
+                {showSearchResults && searchResults && (
+                  <div className="absolute left-0 top-full z-50 mt-1 w-full overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+                    {searchResults.total === 0 ? (
+                      <p className="px-4 py-3 text-sm text-slate-500">Ничего не найдено по «{globalSearch}»</p>
+                    ) : (
+                      <>
+                        {searchResults.leads.length > 0 && (
+                          <div>
+                            <p className="border-b border-slate-100 px-4 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Сделки</p>
+                            {searchResults.leads.map((l) => (
+                              <button key={l.id} className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm transition hover:bg-orange-50" onClick={() => { navigate(`/leads/${l.id}`); setShowSearchResults(false); setGlobalSearch(""); }}>
+                                <KanbanSquare size={14} className="shrink-0 text-bakha-orange" />
+                                <span className="min-w-0 flex-1 truncate font-medium text-slate-900">{l.title}</span>
+                                <span className="shrink-0 text-xs text-slate-400">{l.contactName ?? l.leadNumber}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {searchResults.tasks.length > 0 && (
+                          <div className="border-t border-slate-100">
+                            <p className="border-b border-slate-100 px-4 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Задачи</p>
+                            {searchResults.tasks.map((t) => (
+                              <button key={t.id} className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm transition hover:bg-orange-50" onClick={() => { navigate("/tasks"); setShowSearchResults(false); setGlobalSearch(""); }}>
+                                <CheckSquare size={14} className="shrink-0 text-slate-400" />
+                                <span className="min-w-0 flex-1 truncate text-slate-700">{t.title}</span>
+                                <span className="shrink-0 text-xs text-slate-400">{t.client ?? ""}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -1486,10 +1555,14 @@ function KanbanPage({ pipelineCode, title }: { pipelineCode: "sales" | "measurem
   const managerOptions = Array.from(new Set(basePipelineLeads.map((item) => item.responsibleName).filter(Boolean))) as string[];
   const sourceOptions = Array.from(new Set(basePipelineLeads.map((item) => item.source)));
   const subtitle = pipelineCode === "sales" ? "Плотная воронка продаж от первого обращения до реализации" : "Замеры, перерасчёты, предоплаты и монтаж";
-  const todayMeasurements = pipelineLeads.filter((item) => item.measurementAt?.slice(0, 10) === "2026-06-01").length;
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayMeasurements = pipelineLeads.filter((item) => item.measurementAt?.slice(0, 10) === todayStr).length;
   const measured = pipelineLeads.filter((item) => ["Провели замер", "Сделан перерасчёт", "Предоплата", "Установка", "Полная оплата"].includes(item.stageName)).length;
   const prepay = pipelineLeads.filter((item) => ["Предоплата", "Установка", "Полная оплата", "Остаток долг"].includes(item.stageName)).length;
   const overdue = tasks.filter((item) => taskBucket(item) === "Просроченные").length;
+  // Sales-specific KPIs
+  const salesWithMeasurement = pipelineLeads.filter((item) => item.stageName === "Назначил замер").length;
+  const salesWithoutTask = pipelineLeads.filter((item) => !tasks.some((t) => t.leadId === item.id && t.status !== "done")).length;
 
   const kanbanRef = useRef<HTMLDivElement>(null);
   useHorizontalDragScroll(kanbanRef);
@@ -1567,7 +1640,14 @@ function KanbanPage({ pipelineCode, title }: { pipelineCode: "sales" | "measurem
           <KpiCard icon={Percent} label="Конверсия в предоплату" value={`${Math.round((prepay / Math.max(1, pipelineLeads.length)) * 100)}%`} caption="от замерной воронки" tone="slate" />
           <KpiCard icon={AlertTriangle} label="Просроченные задачи" value={String(overdue)} caption="по всем сделкам" tone="red" />
         </div>
-      ) : null}
+      ) : (
+        <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <KpiCard icon={KanbanSquare} label="Всего сделок" value={String(pipelineLeads.length)} caption={formatMoney(pipelineLeads.reduce((s, l) => s + l.budget, 0))} tone="orange" />
+          <KpiCard icon={Ruler} label="Назначен замер" value={String(salesWithMeasurement)} caption="ожидают замерщика" tone="slate" />
+          <KpiCard icon={AlertCircle} label="Без задач" value={String(salesWithoutTask)} caption="нет активных задач" tone="red" />
+          <KpiCard icon={AlertTriangle} label="Просроченные задачи" value={String(overdue)} caption="требуют внимания" tone="red" />
+        </div>
+      )}
       <div className="mb-4 flex flex-wrap gap-2">
         <Chip label={`${pipelineLeads.length} сделок`} />
         <Chip label={formatMoney(pipelineLeads.reduce((sum, item) => sum + item.budget, 0))} />
@@ -4639,6 +4719,230 @@ function TaskDatePickerModal({
         </div>
       </div>
     </div>
+  );
+}
+
+// ── Reserve status helpers ─────────────────────────────────────────────────────
+const RESERVE_STAGES = ["Предоплата", "Сделан перерасчёт", "Установка", "Полная оплата", "Остаток долг"] as const;
+const RESERVE_STAGE_COLOR: Record<string, string> = {
+  "Предоплата":        "bg-blue-100 text-blue-700",
+  "Сделан перерасчёт": "bg-purple-100 text-purple-700",
+  "Установка":         "bg-orange-100 text-orange-700",
+  "Полная оплата":     "bg-green-100 text-green-700",
+  "Остаток долг":      "bg-red-100 text-red-700"
+};
+
+function ReservePage() {
+  const { leads, tasks } = useCrm();
+  const navigate = useNavigate();
+  const [filterStage, setFilterStage] = useState("all");
+  const [filterInstaller, setFilterInstaller] = useState("all");
+  const [query, setQuery] = useState("");
+
+  const reserveBase = leads.filter((l) => (RESERVE_STAGES as readonly string[]).includes(l.stageName));
+  const installerOptions = Array.from(new Set(reserveBase.map((l) => l.installerName).filter(Boolean))) as string[];
+
+  const reserveLeads = reserveBase
+    .filter((l) => filterStage === "all" || l.stageName === filterStage)
+    .filter((l) => filterInstaller === "all" || l.installerName === filterInstaller)
+    .filter((l) => {
+      if (!query) return true;
+      const lq = query.toLowerCase();
+      return `${l.title} ${l.contactName ?? ""} ${l.contactPhone ?? ""} ${l.address ?? ""}`.toLowerCase().includes(lq);
+    })
+    .sort((a, b) => (a.measurementAt ?? "").localeCompare(b.measurementAt ?? ""));
+
+  const stageCount = (stage: string) => reserveBase.filter((l) => l.stageName === stage).length;
+
+  return (
+    <>
+      <PageHeader
+        title="Резерв и материалы"
+        subtitle="Сделки после предоплаты: резерв материалов, монтаж, финальный расчёт"
+        action="Добавить сделку"
+        onAction={() => navigate("/measurements")}
+      />
+      {/* KPI row */}
+      <div className="mb-4 grid gap-3 md:grid-cols-3 xl:grid-cols-5">
+        {(RESERVE_STAGES as readonly string[]).map((stage) => (
+          <button
+            key={stage}
+            className={`rounded-xl border p-3 text-left transition hover:border-bakha-orange ${filterStage === stage ? "border-bakha-orange bg-orange-50" : "border-slate-200 bg-white"}`}
+            onClick={() => setFilterStage(filterStage === stage ? "all" : stage)}
+          >
+            <p className="text-lg font-bold text-slate-950">{stageCount(stage)}</p>
+            <p className="mt-0.5 text-xs text-slate-500">{stage}</p>
+          </button>
+        ))}
+      </div>
+      {/* Filters */}
+      <div className="mb-4 grid gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:grid-cols-[1fr_200px_200px]">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+          <input
+            className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-sm outline-none transition focus:border-bakha-orange focus:bg-white focus:ring-4 focus:ring-orange-100"
+            placeholder="Поиск по клиенту, адресу, телефону"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+        <select className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none" value={filterStage} onChange={(e) => setFilterStage(e.target.value)}>
+          <option value="all">Все этапы</option>
+          {(RESERVE_STAGES as readonly string[]).map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none" value={filterInstaller} onChange={(e) => setFilterInstaller(e.target.value)}>
+          <option value="all">Все монтажники</option>
+          {installerOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+      </div>
+      {/* Table */}
+      {reserveLeads.length === 0 ? (
+        <EmptyState
+          title="Нет сделок в резерве"
+          text={filterStage !== "all" || filterInstaller !== "all" || query ? "Нет сделок по выбранному фильтру." : "Сделки появятся здесь после предоплаты и перехода в этапы резерва и монтажа."}
+        />
+      ) : (
+        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="grid grid-cols-[2fr_1.2fr_1fr_1fr_0.8fr_auto] border-b border-slate-100 bg-slate-50 px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            <span>Клиент / Сделка</span>
+            <span>Адрес</span>
+            <span>Дата замера</span>
+            <span>Монтажник</span>
+            <span>Оплата</span>
+            <span />
+          </div>
+          {reserveLeads.map((l) => {
+            const taskForLead = tasks.filter((t) => t.leadId === l.id && t.status !== "done");
+            return (
+              <div key={l.id} className="grid grid-cols-[2fr_1.2fr_1fr_1fr_0.8fr_auto] items-center border-b border-slate-50 px-4 py-3 text-sm last:border-0 hover:bg-slate-50">
+                <div className="min-w-0">
+                  <p className="truncate font-semibold text-slate-950">{l.contactName ?? l.title}</p>
+                  <p className="truncate text-xs text-slate-500">{l.title} · {l.contactPhone}</p>
+                  <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold ${RESERVE_STAGE_COLOR[l.stageName] ?? "bg-slate-100 text-slate-600"}`}>{l.stageName}</span>
+                </div>
+                <p className="truncate text-xs text-slate-600">{l.address ?? "—"}</p>
+                <p className="text-xs text-slate-600">{l.measurementAt ? formatDate(l.measurementAt) : "—"}</p>
+                <p className="text-xs text-slate-600">{l.installerName ?? "—"}</p>
+                <p className="text-xs text-slate-600">{l.paymentStatus ?? "—"}</p>
+                <div className="flex items-center gap-2">
+                  {taskForLead.length > 0 && <span className="rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-semibold text-orange-700">{taskForLead.length} задач</span>}
+                  <button className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium transition hover:border-bakha-orange hover:text-bakha-orange" onClick={() => navigate(`/leads/${l.id}`)}>
+                    Открыть
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </>
+  );
+}
+
+// ── Installations page ────────────────────────────────────────────────────────
+const INSTALL_STAGES = ["Установка"] as const;
+const INSTALL_STAGE_COLOR: Record<string, string> = {
+  "Установка": "bg-orange-100 text-orange-700"
+};
+
+function InstallationsPage() {
+  const { leads, tasks, users } = useCrm();
+  const navigate = useNavigate();
+  const [filterInstaller, setFilterInstaller] = useState("all");
+  const [filterDate, setFilterDate] = useState("");
+  const [query, setQuery] = useState("");
+
+  const installerOptions = Array.from(new Set(
+    leads.filter((l) => l.stageName === "Установка").map((l) => l.installerName).filter(Boolean)
+  )) as string[];
+
+  const installations = leads
+    .filter((l) => l.stageName === "Установка")
+    .filter((l) => filterInstaller === "all" || l.installerName === filterInstaller)
+    .filter((l) => !filterDate || l.measurementAt?.slice(0, 10) === filterDate)
+    .filter((l) => {
+      if (!query) return true;
+      return `${l.title} ${l.contactName ?? ""} ${l.contactPhone ?? ""} ${l.address ?? ""}`.toLowerCase().includes(query.toLowerCase());
+    })
+    .sort((a, b) => (a.measurementAt ?? "").localeCompare(b.measurementAt ?? ""));
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayInstallations = leads.filter((l) => l.stageName === "Установка" && l.measurementAt?.slice(0, 10) === todayStr).length;
+
+  return (
+    <>
+      <PageHeader title="Монтаж" subtitle="Установка натяжных потолков — текущие и предстоящие объекты" />
+      <div className="mb-4 grid gap-3 md:grid-cols-3 xl:grid-cols-4">
+        <KpiCard icon={Hammer} label="Всего монтажей" value={String(leads.filter((l) => l.stageName === "Установка").length)} caption="в работе" tone="orange" />
+        <KpiCard icon={CalendarDays} label="Сегодня" value={String(todayInstallations)} caption="запланировано" tone="slate" />
+        <KpiCard icon={Users} label="Монтажников" value={String(new Set(leads.filter((l) => l.stageName === "Установка").map((l) => l.installerName).filter(Boolean)).size)} caption="активных" tone="green" />
+        <KpiCard icon={AlertTriangle} label="Задачи" value={String(tasks.filter((t) => t.status !== "done" && leads.find((l) => l.id === t.leadId)?.stageName === "Установка").length)} caption="открыто" tone="red" />
+      </div>
+      {/* Filters */}
+      <div className="mb-4 grid gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm md:grid-cols-[1fr_180px_180px]">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+          <input
+            className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-sm outline-none transition focus:border-bakha-orange focus:bg-white"
+            placeholder="Поиск по клиенту, адресу, телефону"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+        <input
+          type="date"
+          className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none"
+          value={filterDate}
+          onChange={(e) => setFilterDate(e.target.value)}
+          title="Фильтр по дате"
+        />
+        <select className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none" value={filterInstaller} onChange={(e) => setFilterInstaller(e.target.value)}>
+          <option value="all">Все монтажники</option>
+          {installerOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+      </div>
+      {/* List */}
+      {installations.length === 0 ? (
+        <EmptyState
+          title="Нет монтажей"
+          text={filterInstaller !== "all" || filterDate || query ? "Нет монтажей по выбранному фильтру." : "Монтажи появятся здесь когда сделки перейдут в этап «Установка»."}
+        />
+      ) : (
+        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="grid grid-cols-[2fr_1.5fr_1fr_1fr_auto] border-b border-slate-100 bg-slate-50 px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            <span>Клиент / Сделка</span>
+            <span>Адрес</span>
+            <span>Дата</span>
+            <span>Монтажник</span>
+            <span />
+          </div>
+          {installations.map((l) => {
+            const taskCount = tasks.filter((t) => t.leadId === l.id && t.status !== "done").length;
+            return (
+              <div key={l.id} className="grid grid-cols-[2fr_1.5fr_1fr_1fr_auto] items-center border-b border-slate-50 px-4 py-3 text-sm last:border-0 hover:bg-slate-50">
+                <div className="min-w-0">
+                  <p className="truncate font-semibold text-slate-950">{l.contactName ?? l.title}</p>
+                  <p className="truncate text-xs text-slate-500">{l.title}</p>
+                  <p className="text-xs text-slate-500">{l.contactPhone}</p>
+                </div>
+                <div className="min-w-0">
+                  <p className="truncate text-xs text-slate-600">{l.address ?? "—"}</p>
+                  <p className="text-xs text-slate-400">{l.area ? `${l.area} м²` : ""}</p>
+                </div>
+                <p className="text-xs text-slate-600">{l.measurementAt ? new Date(l.measurementAt).toLocaleDateString("ru-RU", { day: "2-digit", month: "short" }) : "—"}</p>
+                <p className="text-xs text-slate-600">{l.installerName ?? "—"}</p>
+                <div className="flex items-center gap-2">
+                  {taskCount > 0 && <span className="rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-semibold text-orange-700">{taskCount}</span>}
+                  <button className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium transition hover:border-bakha-orange hover:text-bakha-orange" onClick={() => navigate(`/leads/${l.id}`)}>
+                    Открыть
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </>
   );
 }
 

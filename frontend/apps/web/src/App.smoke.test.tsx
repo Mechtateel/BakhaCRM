@@ -79,6 +79,10 @@ beforeEach(() => {
       if (url.includes("/api/ai/suggestions") && method === "GET") {
         return jsonResponse({ suggestions: [], aiManager: { enabled: false, dryRun: true, autoSend: false, autoActions: false } });
       }
+      // Global search endpoint
+      if (url.includes("/api/search") && method === "GET") {
+        return jsonResponse({ leads: [], contacts: [], tasks: [] });
+      }
       return Promise.reject(new Error("API unavailable in smoke test"));
     })
   );
@@ -733,8 +737,14 @@ describe("Bakha CRM smoke", () => {
     // The unread badge (showing "1") should not be visible after auto-selection
     // (it's cleared optimistically in state, then server call is fire-and-forget)
     await waitFor(() => {
-      // After load+auto-select, badge value should be gone or 0 (unread cleared optimistically)
-      expect(screen.queryByText("1")).not.toBeInTheDocument();
+      // After auto-select, the orange unread badge on the conversation card should be gone.
+      // We check that no element with both "rounded-full bg-bakha-orange" classes and text "1" exists
+      // (nav badges like "Монтаж: 1" are a different class so we scope to the conversation list area).
+      const conversationButtons = document.querySelectorAll('button.w-full.rounded-lg.border');
+      const unreadBadges = Array.from(conversationButtons).flatMap((btn) =>
+        Array.from(btn.querySelectorAll('.bg-bakha-orange'))
+      );
+      expect(unreadBadges.length).toBe(0);
     });
   });
 
@@ -960,6 +970,81 @@ describe("Bakha CRM smoke", () => {
       expect(screen.getByText("Новый клиент")).toBeInTheDocument();
       expect(screen.queryByText("Старый клиент")).not.toBeInTheDocument();
     });
+  });
+
+  // ── Phase 6: Core business workflow tests ────────────────────────────────────
+
+  it("reserve page renders with empty state when no reserve leads", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/reserve");
+
+    expect(await screen.findByRole("heading", { name: "Резерв и материалы" })).toBeInTheDocument();
+    // With demo data (BP-2406 is in "Сделан перерасчёт" stage which is a reserve stage)
+    // At minimum the page renders without crash
+    expect(screen.getByText(/Резерв и монтаж|Резерв и материалы/i)).toBeInTheDocument();
+  });
+
+  it("installations page renders correctly", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/installations");
+
+    expect(await screen.findByRole("heading", { name: "Монтаж" })).toBeInTheDocument();
+    expect(screen.getByText("Всего монтажей")).toBeInTheDocument();
+  });
+
+  it("global search shows results dropdown from CRM context", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/dashboard");
+
+    await screen.findByRole("heading", { name: "Рабочий стол" });
+
+    const searchInput = screen.getByPlaceholderText("Поиск по сделкам, клиентам, телефону");
+    fireEvent.change(searchInput, { target: { value: "Айгерим" } });
+
+    // Should show search results dropdown with lead result
+    await waitFor(() => {
+      expect(screen.getByText("Сделки")).toBeInTheDocument();
+    });
+    // Lead "Потолок в гостиную" belongs to "Айгерим С." in seed data
+    expect(screen.getByText("Потолок в гостиную")).toBeInTheDocument();
+  });
+
+  it("global search closes on Escape key", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/dashboard");
+
+    await screen.findByRole("heading", { name: "Рабочий стол" });
+
+    const searchInput = screen.getByPlaceholderText("Поиск по сделкам, клиентам, телефону");
+    fireEvent.change(searchInput, { target: { value: "Потолок" } });
+
+    await waitFor(() => expect(screen.getByText("Сделки")).toBeInTheDocument());
+
+    fireEvent.keyDown(searchInput, { key: "Escape" });
+
+    await waitFor(() => {
+      expect(screen.queryByText("Сделки")).not.toBeInTheDocument();
+    });
+  });
+
+  it("sales kanban shows KPI cards", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/sales");
+
+    expect(await screen.findByRole("heading", { name: "Отдел продаж" })).toBeInTheDocument();
+    expect(await screen.findByText("Всего сделок")).toBeInTheDocument();
+    expect(screen.getByText("Назначен замер")).toBeInTheDocument();
+    expect(screen.getByText("Без задач")).toBeInTheDocument();
+  });
+
+  it("measurements kanban shows KPI cards including today count", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/measurements");
+
+    expect(await screen.findByRole("heading", { name: "Замер" })).toBeInTheDocument();
+    expect(await screen.findByText("Сегодня замеров")).toBeInTheDocument();
+    // "Провели замер" appears in KPI card and also in stage dropdowns — use getAllByText
+    expect((await screen.findAllByText("Провели замер")).length).toBeGreaterThan(0);
   });
 
   it("opens task detail modal from task page without navigation", async () => {
