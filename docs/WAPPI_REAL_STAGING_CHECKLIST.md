@@ -1,297 +1,266 @@
 # WAPPI Real Staging Checklist
 
-**Version:** 1.0  
-**Branch:** post-demo-improvements  
-**Purpose:** Step-by-step guide for connecting the real WAPPI integration to Bakha CRM in staging.
+**Version:** 2.0
+**Branch:** post-demo-improvements
+**Updated:** 2026-06-07
+**Purpose:** Safe step-by-step guide for connecting real WAPPI credentials to Bakha CRM.
 
-> **Full curl script:** [`scripts/staging-ai-test.md`](../scripts/staging-ai-test.md) (includes AI staging)
-
----
-
-## 1. Prerequisites
-
-- [ ] CRM backend running on staging (not production)
-- [ ] A real WAPPI.pro account with a connected WhatsApp number
-- [ ] WAPPI token and Profile ID from the WAPPI.pro dashboard
-- [ ] A publicly accessible HTTPS URL for the CRM webhook endpoint (see Section 3 for ngrok/cloudflared)
-- [ ] `WAPPI_DRY_RUN=true` initially — switch to `false` only after dry-run passes
+> **Security rules — read before proceeding:**
+> - NEVER paste WAPPI credentials into source code.
+> - NEVER commit `backend/server/.env`.
+> - NEVER log token or password values.
+> - NEVER enable `AI_MANAGER_AUTO_SEND=true` without explicit review.
+> - NEVER enable `WAPPI_DRY_RUN=false` until dry-run tests pass.
 
 ---
 
-## 2. Required Environment Variables
+## 0. Where credentials go
+
+### Which file does the backend read?
+
+```
+backend/server/.env        ← this is the ONLY file the backend reads
+```
+
+The backend runs `tsx watch src/index.ts` from the `backend/server/` directory.
+`import "dotenv/config"` loads `.env` from the current working directory.
+
+**This file is gitignored and must be created manually.**
+
+### Copy the template:
+
+```bash
+# Linux/macOS
+cp backend/server/.env.example backend/server/.env
+
+# Windows (PowerShell)
+copy backend\server\.env.example backend\server\.env
+```
+
+Then edit `backend/server/.env` to fill in your real values.
+
+---
+
+## 1. Where to find WAPPI credentials
+
+### WAPPI_TOKEN (API token)
+
+1. Log in at [https://wappi.pro](https://wappi.pro)
+2. Go to your account/profile → **API** or **Access tokens**
+3. Copy the long alphanumeric token (e.g. `abc123xyz...`)
+4. Paste into `backend/server/.env` as `WAPPI_TOKEN=abc123xyz...`
+
+**Do NOT store the token in any source file or commit.**
+
+### WAPPI_PROFILE_ID (WhatsApp profile identifier)
+
+Your WAPPI.pro account can have multiple WhatsApp profiles (numbers). Each profile has a unique `profile_id`.
+
+1. Log in at [https://wappi.pro](https://wappi.pro)
+2. Go to **Profiles** (or similar section)
+3. Click your WhatsApp profile (the number you want to use for this CRM)
+4. Open the **API** or **Integration** tab within that profile
+5. Look for the field labelled **Profile ID** or **profile_id**
+
+> **Important:** The numeric or UUID ID shown in the browser URL (e.g. `/profiles/12345`) may OR may not be the `profile_id` used in API calls. Confirm from the API/Integration tab, not just the URL.
+
+6. Paste into `backend/server/.env` as `WAPPI_PROFILE_ID=<value>`
+
+### WAPPI_WEBHOOK_SECRET (optional)
+
+If WAPPI.pro allows you to configure a webhook verification secret:
+
+1. Generate a random secret: `openssl rand -hex 32`
+2. Set it in the WAPPI dashboard under webhook settings
+3. Set the same value in `backend/server/.env` as `WAPPI_WEBHOOK_SECRET=<generated>`
+
+If WAPPI does not use a secret, leave this blank — all webhooks are accepted.
+
+---
+
+## 2. Staging Step 1 — Dry-run with real credentials
+
+Edit `backend/server/.env`:
 
 ```env
-# Enable WAPPI
 WAPPI_ENABLED=true
-
-# Start in dry-run first (no real WhatsApp messages sent)
 WAPPI_DRY_RUN=true
-
-# WAPPI credentials (from wappi.pro dashboard)
-WAPPI_TOKEN=your_api_token_here
-WAPPI_PROFILE_ID=your_profile_id_here
-
-# Webhook security (any random string you choose — set the same in WAPPI dashboard)
-WAPPI_WEBHOOK_SECRET=your_random_webhook_secret
-
-# Optional: custom API base URL (default is https://wappi.pro)
-# WAPPI_API_BASE_URL=https://wappi.pro
+WAPPI_API_BASE_URL=https://wappi.pro
+WAPPI_PROFILE_ID=<paste from WAPPI dashboard>
+WAPPI_TOKEN=<paste from WAPPI dashboard>
+WAPPI_WEBHOOK_SECRET=<optional — only if set in WAPPI dashboard>
 ```
 
-After editing `.env`, restart the server: `npm run dev:server`
-
-> **Never commit** `WAPPI_TOKEN` or `WAPPI_WEBHOOK_SECRET` to the repository.
-
----
-
-## 3. Webhook URL Setup
-
-The CRM listens for incoming WAPPI webhooks at:
-
-```
-POST {YOUR_PUBLIC_CRM_URL}/api/webhooks/wappi
-```
-
-You must configure this URL in the WAPPI.pro dashboard under **Уведомления (Notifications)**.
-
-### Local Development with ngrok
+Restart the backend:
 
 ```bash
-# Install ngrok if not already installed
-# https://ngrok.com/download
-
-# Expose local port 4000
-ngrok http 4000
-
-# ngrok will show: https://abc123.ngrok.io
-# Your webhook URL: https://abc123.ngrok.io/api/webhooks/wappi
+npm run dev:server
 ```
 
-### Local Development with cloudflared
+Check the server log. You should see:
+
+```
+[WAPPI] Dry-run mode. Configured: token=✓, profile=✓. Messages saved locally only.
+```
+
+If you see `✗` for token or profile, the env var is not loading. Double-check the file path.
+
+### Test the connection:
 
 ```bash
-cloudflared tunnel --url http://localhost:4000
-# Your webhook URL: https://random-name.trycloudflare.com/api/webhooks/wappi
+curl -s -X POST http://localhost:4000/api/wappi/test-connection \
+  -H "Cookie: bakha_session=<your session cookie>"
 ```
 
-### Staging Server
-
-If running on a VPS, the webhook URL is: `https://your-domain.com/api/webhooks/wappi`
-
-Configure in CRM Settings → Интеграции → WAPPI → copy the webhook URL displayed there.
-
----
-
-## 4. How to Test — Dry-Run First
-
-### 4.1 Verify dry-run in WAPPI settings
-
-1. Go to **Настройки → Интеграции → WAPPI**
-2. Verify status shows "Dry-run (без реальной отправки)"
-3. Click **"Проверить WAPPI"**
-4. Expected: green panel "Dry-run: симуляция ОК"
-
-### 4.2 Simulate incoming webhook
-
-```bash
-WEBHOOK_SECRET="your_random_webhook_secret"
-
-# Send a fake incoming WhatsApp message
-curl -X POST http://localhost:4000/api/webhooks/wappi \
-  -H "Content-Type: application/json" \
-  -H "x-wappi-signature: $WEBHOOK_SECRET" \
-  -d '{
-    "type": "message",
-    "message": {
-      "id": "test-msg-001",
-      "from_me": false,
-      "phone": "77011234567",
-      "text": {"body": "Добрый день, интересует потолок"},
-      "time": 1717757400,
-      "chat_id": "77011234567@s.whatsapp.net"
-    }
-  }'
-```
-
-Expected response:
+Expected response (dry-run, configured):
 ```json
-{ "ok": true, "leadId": 1, "contactId": 1, "conversationId": 1, "message": { ... } }
+{
+  "ok": true,
+  "status": "dry_run_success",
+  "dryRun": true,
+  "configured": true,
+  "message": "Dry-run режим: токен и профиль настроены. Установите WAPPI_DRY_RUN=false для реального подключения."
+}
 ```
 
-### 4.3 Verify contact/lead was created
-
-Go to **Сделки** in CRM — a new lead "WhatsApp 77011234567" should appear.
-
-### 4.4 Dedup test — same message ID
-
-Send the same webhook again (same `id: "test-msg-001"`):
-```bash
-# Same curl as above — should return duplicate=true
-```
-Expected: `{ "ok": true, "duplicate": true }`
+If `configured: false`, the token or profileId is not set.
 
 ---
 
-## 5. How to Test — Real WAPPI Connection
+## 3. Staging Step 2 — Send a dry-run message
 
-### 5.1 Switch to real mode
+From the CRM Chats page, find or create a conversation and send a message.
 
-1. Set `WAPPI_DRY_RUN=false` in `.env`
-2. Restart server
-3. Click **"Проверить WAPPI"** in Settings → WAPPI
-4. Expected: green panel "Подключено к WAPPI. Статус профиля: active"
-
-### 5.2 Send a real incoming message
-
-From your personal WhatsApp, send a message to the WhatsApp number connected in WAPPI.
-
-Check:
-- Message appears in CRM → Чаты within a few seconds (after WAPPI sends webhook)
-- Lead is created or found by phone
-- Unread count badge appears on conversation
-
-### 5.3 Send reply from CRM
-
-1. Go to **Чаты**, find the conversation
-2. Type a reply and click "Отправить"
-3. On the real WhatsApp number, the reply should arrive
-4. Response should show: `{ "dryRun": false, "message": { "status": "sent" } }`
+Expected behavior (dry-run mode):
+- Message is saved to the database with `channel=wappi`, `direction=outgoing`
+- No real WhatsApp message is sent
+- Logs show dry-run send
 
 ---
 
-## 6. Delivery/Read Status Webhook Test
+## 4. Staging Step 3 — Enable real sends (one test only)
 
-Configure WAPPI to also send status webhooks (if supported by your WAPPI plan).
+Only after Step 1 and Step 2 pass cleanly:
 
-### Sample status webhook (delivery confirmation)
+Edit `backend/server/.env`:
+
+```env
+WAPPI_DRY_RUN=false
+```
+
+Restart the backend.
+
+Check server log:
+
+```
+[WAPPI] REAL mode active. Profile ID: abc123... Base: https://wappi.pro
+```
+
+**Send one test message to your own phone number only:**
+
+From the CRM Chats page, find the conversation with your own number and send a short text like "Тест CRM".
+
+Confirm the message arrives on your phone.
+
+Do NOT send real messages to clients during staging.
+
+---
+
+## 5. Staging Step 4 — Configure webhook (incoming messages)
+
+For the CRM to receive incoming WhatsApp messages, configure the webhook URL in your WAPPI.pro dashboard.
+
+### Webhook URL:
+
+```
+https://YOUR_DOMAIN/api/webhooks/wappi
+```
+
+For local development, expose your local server using ngrok:
 
 ```bash
-curl -X POST http://localhost:4000/api/webhooks/wappi \
+ngrok http 4000
+```
+
+Then set the webhook URL in the WAPPI dashboard to:
+```
+https://<ngrok-id>.ngrok.io/api/webhooks/wappi
+```
+
+### Optional: Verify webhook signature
+
+If you set `WAPPI_WEBHOOK_SECRET`, the CRM will check the `x-wappi-signature` or `x-webhook-secret` header on each incoming request. Set the same secret in the WAPPI dashboard.
+
+---
+
+## 6. Staging Step 5 — Test incoming message
+
+1. From your personal phone, send a WhatsApp message to the business number connected to WAPPI
+2. The CRM backend should receive the webhook
+3. Check the backend logs for `[WAPPI] incoming webhook received`
+4. Open the CRM Chats page — the conversation and message should appear
+
+---
+
+## 7. Staging Step 6 — Verify duplicate prevention
+
+Replay the same webhook payload:
+
+```bash
+curl -s -X POST http://localhost:4000/api/webhooks/wappi \
   -H "Content-Type: application/json" \
-  -H "x-wappi-signature: $WEBHOOK_SECRET" \
-  -d '{
-    "type": "message_status",
-    "status": {
-      "id": "wamid.xxx",
-      "status": "delivered"
-    }
-  }'
+  -d '{"id": "test-msg-123", "phone": "77012345678", "text": "Test duplicate", "timestamp": "..."}'
 ```
 
-Expected: `{ "ok": true, "statusUpdated": true, "status": "delivered" }`
+Send the same `id` twice. Confirm:
+- Second POST does not create a duplicate message in the DB
+- The endpoint returns OK (idempotent)
 
-If message ID not found: `{ "ok": true, "statusUpdated": false, "reason": "message_not_found" }`
+---
 
-### Sample read receipt
+## 8. Safety Checklist
 
-```bash
-curl -X POST http://localhost:4000/api/webhooks/wappi \
-  -H "Content-Type: application/json" \
-  -H "x-wappi-signature: $WEBHOOK_SECRET" \
-  -d '{
-    "type": "message_status",
-    "status": {
-      "id": "wamid.xxx",
-      "status": "read"
-    }
-  }'
+Before going live (production):
+
+- [ ] `WAPPI_DRY_RUN=false` only after all staging tests pass
+- [ ] Real token confirmed working via test-connection endpoint
+- [ ] Webhook URL returns 200 for real WAPPI payloads
+- [ ] Duplicate prevention confirmed (Step 6)
+- [ ] `AI_MANAGER_AUTO_SEND=false` (remains off unless explicitly reviewed)
+- [ ] `backend/server/.env` is gitignored and not committed
+- [ ] Server logs do NOT print the full WAPPI token
+- [ ] System status page does NOT expose credentials (confirm in browser)
+
+---
+
+## 9. Rollback
+
+To safely disable WAPPI at any time:
+
+```env
+WAPPI_ENABLED=false
 ```
 
----
-
-## 7. Pagination Test
-
-After sending several messages to a conversation, test pagination:
-
-```bash
-COOKIE="connect.sid=s%3A<your-session>"
-
-# Get first page (50 most recent messages)
-curl -s -H "Cookie: $COOKIE" \
-  "http://localhost:4000/api/conversations/1/messages?limit=50" | jq '{count: (.messages | length), hasMore}'
-
-# Load older messages (pass oldest message ID from previous result)
-curl -s -H "Cookie: $COOKIE" \
-  "http://localhost:4000/api/conversations/1/messages?limit=50&before=25" | jq '{count: (.messages | length), hasMore}'
-```
-
-In the UI, the **"Загрузить ещё"** button should appear when `hasMore: true`.
+Restart backend. No messages will be sent or processed until re-enabled.
 
 ---
 
-## 8. Unread Count Test
+## 10. Known WAPPI API notes
 
-1. Send an incoming message (via webhook curl above)
-2. Go to **Чаты** — the conversation should show an orange badge with the unread count
-3. Click the conversation — badge should disappear immediately (optimistic UI update)
-4. Verify the backend was called: `POST /api/conversations/1/read`
-
----
-
-## 9. Lead Matching Test — Active Lead Preference
-
-If a contact has both an active and a closed lead:
-
-1. Create a contact with two leads — one active, one won
-2. Send an incoming message from that contact's phone
-3. Verify the message is attached to the **active** lead (not the won one)
-4. Check CRM → Сделки → the active lead should show the incoming message
+- API base URL: `https://wappi.pro`
+- Send message: `POST /api/sync/message/send` with `Authorization: Bearer {token}`
+- Profile status: `GET /api/sync/profile/status?profile_id={id}` with `Authorization: Bearer {token}`
+- The profile_id in API calls may differ from the numeric ID in the dashboard URL
+- WAPPI webhook payload shape may vary — the CRM uses flexible normalisation
 
 ---
 
-## 10. Rollback Plan
+## Quick Reference
 
-If real WAPPI causes issues:
-
-1. Set `WAPPI_DRY_RUN=true` → restart server — switches to simulation immediately
-2. Or set `WAPPI_ENABLED=false` → no WAPPI processing at all
-3. Existing messages and leads are preserved (no data loss)
-4. WAPPI is purely additive — disabling it doesn't affect other CRM features
-
----
-
-## 11. Questions to Confirm with WAPPI Support
-
-Before staging with real credentials:
-
-1. **Incoming message payload:** What is the exact JSON structure for an incoming WhatsApp message?
-2. **Status webhook payload:** What is the exact JSON for delivery/read receipts? Does your WAPPI plan include status webhooks?
-3. **Webhook verification:** Is `x-wappi-signature` the correct header name? Is it the raw secret or HMAC-SHA256?
-4. **Send endpoint:** Is `/api/sync/message/send` the correct endpoint? What fields are required?
-5. **Send response:** What does the response JSON look like? Is the message ID in `id` or `message_id`?
-6. **Profile status endpoint:** Is `/api/sync/profile/status?profile_id=...` the correct health check URL?
-7. **Rate limits:** Are there send rate limits (messages/minute)?
-8. **Media:** How are incoming media (images, documents) delivered — URL or base64?
-9. **Multiple numbers:** Does one profile ID support multiple WhatsApp numbers?
-
----
-
-## 12. Staging Checklist
-
-| Test | Expected | Done |
-|------|---------|------|
-| `WAPPI_DRY_RUN=true`, check connection panel | "Dry-run: симуляция ОК" | [ ] |
-| Simulate incoming webhook (dry-run) | Contact+lead created, message saved | [ ] |
-| Dedup: send same webhook twice | Second returns `{duplicate: true}` | [ ] |
-| Status webhook: deliver/read | Message.status updated, no new message | [ ] |
-| Unread badge appears after incoming | Badge shows count | [ ] |
-| Unread badge clears on open | Badge disappears | [ ] |
-| Reply from ChatsPage (dry-run) | `{dryRun: true}` response, message saved | [ ] |
-| AI suggestion appears (if AI enabled) | Draft card in ChatsPage ≤8s | [ ] |
-| Approve AI suggestion (dry-run) | Message marked sent, no real WhatsApp | [ ] |
-| `WAPPI_DRY_RUN=false`, real incoming | Message from real WhatsApp appears | [ ] |
-| Reply from CRM to real WhatsApp | Client receives message | [ ] |
-| `Загрузить ещё` button | Appears when >50 messages in conversation | [ ] |
-| Active lead preference | Message attaches to active, not won lead | [ ] |
-| WAPPI test-connection: real | Panel shows "Подключено", profile status | [ ] |
-| Rollback: `DRY_RUN=true` | CRM still works, no real messages sent | [ ] |
-| **UI Phase 5 checks:** | | |
-| Outgoing message shows `✓` (sent) | Status indicator visible under bubble | [ ] |
-| Status webhook "delivered" → `✓✓` | Updates within 8s polling cycle | [ ] |
-| Status webhook "read" → `✓✓` (blue) | Updates within 8s polling cycle | [ ] |
-| Status webhook "failed" → `✗ ошибка` | Red bubble + ✗ indicator | [ ] |
-| Conversation list shows last message preview | 1-line truncated text in sidebar | [ ] |
-| `needsReply` badge shows "ответ" | When last message is incoming/client | [ ] |
-| "Требуют ответа" filter | Shows only conversations with `needsReply=true` | [ ] |
-| "Непрочитанные" filter with count badge | Orange badge with number | [ ] |
-| Fast contact lookup (no full-scan logged) | Server log: no "loading all contacts" | [ ] |
+| Variable | Source | Note |
+|---|---|---|
+| `WAPPI_TOKEN` | WAPPI dashboard → API/Token | Long alphanumeric string |
+| `WAPPI_PROFILE_ID` | WAPPI dashboard → Profiles → [profile] → API tab | May be UUID or short name |
+| `WAPPI_WEBHOOK_SECRET` | Self-generated or WAPPI dashboard | Optional; `openssl rand -hex 32` |
+| `WAPPI_ENABLED` | `true` / `false` | Start `false`, enable when ready |
+| `WAPPI_DRY_RUN` | `true` / `false` | Always start `true` |

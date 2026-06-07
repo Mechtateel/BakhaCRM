@@ -3044,6 +3044,29 @@ async function ensureAiSchema() {
   } catch { /* already exists */ }
 }
 
+function logWappiStartupWarnings() {
+  const cfg = getWappiConfig();
+  if (!cfg.enabled) {
+    console.log("[WAPPI] Disabled (WAPPI_ENABLED=false). Set to true in backend/server/.env to activate.");
+    return;
+  }
+  if (!cfg.token) {
+    console.warn("[WAPPI] WARNING: WAPPI_ENABLED=true but WAPPI_TOKEN is not set. Real sends will fail. Set WAPPI_TOKEN in backend/server/.env.");
+  }
+  if (!cfg.profileId) {
+    console.warn("[WAPPI] WARNING: WAPPI_ENABLED=true but WAPPI_PROFILE_ID is not set. Real sends will fail. Set WAPPI_PROFILE_ID in backend/server/.env.");
+  }
+  if (cfg.dryRun) {
+    console.log(`[WAPPI] Dry-run mode. Configured: token=${cfg.token ? "✓" : "✗"}, profile=${cfg.profileId ? "✓" : "✗"}. Messages saved locally only.`);
+  } else {
+    if (cfg.token && cfg.profileId) {
+      console.log(`[WAPPI] REAL mode active. Profile ID: ${cfg.profileId.slice(0, 6)}... Base: ${cfg.apiBaseUrl ?? "https://wappi.pro"}`);
+    } else {
+      console.warn("[WAPPI] WARNING: WAPPI_DRY_RUN=false but token/profile not fully configured. Real sends will throw.");
+    }
+  }
+}
+
 function logAiManagerStartupWarnings() {
   const aiCfg = getAiManagerConfig();
   if (!aiCfg.enabled) return; // Silent when disabled — expected default
@@ -3229,6 +3252,7 @@ async function main() {
   await ensureAiSchema();
   await ensureWappiSchema();
   await ensureNotificationsSchema();
+  logWappiStartupWarnings();
   logAiManagerStartupWarnings();
   // Run due-reminder check immediately, then every 60 s
   void scheduleDueReminders();

@@ -1,9 +1,26 @@
 node_modules
 dist
+
+# ── Env files (never commit real credentials) ─────────────────────────────────
+# Root-level
 .env
 .env.local
+# Backend workspace (backend reads from backend/server/.env)
+backend/server/.env
+backend/server/.env.local
+# Frontend workspace
+frontend/apps/web/.env
+frontend/apps/web/.env.local
+# Catch-all for any nested env files not listed above
+**/.env.local
+
+# ── Database ──────────────────────────────────────────────────────────────────
 data/*.sqlite
 data/*.sqlite-*
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
 *.log
 logs
+
+# ── OS / Editor ───────────────────────────────────────────────────────────────
 .DS_Store
