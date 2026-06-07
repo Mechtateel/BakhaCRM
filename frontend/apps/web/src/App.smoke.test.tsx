@@ -1295,4 +1295,143 @@ describe("Bakha CRM smoke", () => {
     expect(screen.queryByText(/Центр уведомлений будет активирован/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/после подключения/i)).not.toBeInTheDocument();
   });
+
+  it("notification bell displays self-assignment notification (task.assigned type)", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      const jsonResponse = (payload: unknown) => Promise.resolve({ ok: true, json: () => Promise.resolve(payload) });
+      if (url === "/api/notifications" && method === "GET") {
+        return jsonResponse({
+          notifications: [
+            {
+              id: 10,
+              type: "task.assigned",
+              title: "Вы поставили себе задачу",
+              body: "Уникальная тестовая задача #notif-smoke",
+              readAt: null,
+              createdAt: new Date().toISOString(),
+              link: "/tasks",
+            },
+          ],
+          unreadCount: 1,
+        });
+      }
+      if (url.match(/\/api\/notifications\/.+\/read/) && method === "POST") return jsonResponse({ ok: true });
+      if (url === "/api/notifications/read-all" && method === "POST") return jsonResponse({ ok: true });
+      return Promise.reject(new Error("API unavailable in smoke test"));
+    }));
+
+    renderApp("/dashboard");
+    expect(await screen.findByRole("heading", { name: "Рабочий стол" })).toBeInTheDocument();
+
+    // Open notification panel — polling fires immediately so the mock data arrives
+    fireEvent.click(screen.getByRole("button", { name: "Уведомления" }));
+    await screen.findByText("Вы поставили себе задачу");
+    expect(screen.getByText(/Уникальная тестовая задача #notif-smoke/)).toBeInTheDocument();
+  });
+
+  it("notification bell displays due reminder notification (task.due type)", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      const jsonResponse = (payload: unknown) => Promise.resolve({ ok: true, json: () => Promise.resolve(payload) });
+      if (url === "/api/notifications" && method === "GET") {
+        return jsonResponse({
+          notifications: [
+            {
+              id: 20,
+              type: "task.due",
+              title: "Время выполнить задачу",
+              body: "Замер у клиента — 07.06.2026, 15:00",
+              readAt: null,
+              createdAt: new Date().toISOString(),
+              link: "/leads/3",
+            },
+          ],
+          unreadCount: 1,
+        });
+      }
+      if (url.match(/\/api\/notifications\/.+\/read/) && method === "POST") return jsonResponse({ ok: true });
+      if (url === "/api/notifications/read-all" && method === "POST") return jsonResponse({ ok: true });
+      return Promise.reject(new Error("API unavailable in smoke test"));
+    }));
+
+    renderApp("/dashboard");
+    expect(await screen.findByRole("heading", { name: "Рабочий стол" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Уведомления" }));
+    await screen.findByText("Время выполнить задачу");
+    expect(screen.getByText(/Замер у клиента/)).toBeInTheDocument();
+  });
+
+  it("clicking notification marks it read and navigates", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      const jsonResponse = (payload: unknown) => Promise.resolve({ ok: true, json: () => Promise.resolve(payload) });
+      if (url === "/api/notifications" && method === "GET") {
+        return jsonResponse({
+          notifications: [
+            {
+              id: 42,
+              type: "task.assigned",
+              title: "Вам поставили задачу",
+              body: "Следующая задача",
+              readAt: null,
+              createdAt: new Date().toISOString(),
+              link: "/tasks",
+            },
+          ],
+          unreadCount: 1,
+        });
+      }
+      if (url === "/api/notifications/42/read" && method === "POST") return jsonResponse({ ok: true });
+      if (url === "/api/notifications/read-all" && method === "POST") return jsonResponse({ ok: true });
+      return Promise.reject(new Error("API unavailable in smoke test"));
+    }));
+
+    renderApp("/dashboard");
+    expect(await screen.findByRole("heading", { name: "Рабочий стол" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Уведомления" }));
+    await screen.findByText("Вам поставили задачу");
+    fireEvent.click(screen.getByText("Вам поставили задачу").closest("button")!);
+    // Notification marked read (badge count decreases to 0)
+    await waitFor(() => {
+      const badges = document.querySelectorAll(".bg-bakha-orange");
+      return !Array.from(badges).some((el) => el.textContent?.trim() === "1");
+    });
+  });
+
+  it("read-all button marks all notifications read", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      const jsonResponse = (payload: unknown) => Promise.resolve({ ok: true, json: () => Promise.resolve(payload) });
+      if (url === "/api/notifications" && method === "GET") {
+        return jsonResponse({
+          notifications: [
+            { id: 1, type: "task.due", title: "Время выполнить задачу", body: "Task A", readAt: null, createdAt: new Date().toISOString() },
+            { id: 2, type: "task.assigned", title: "Вам назначили задачу", body: "Task B", readAt: null, createdAt: new Date().toISOString() },
+          ],
+          unreadCount: 2,
+        });
+      }
+      if (url === "/api/notifications/read-all" && method === "POST") return jsonResponse({ ok: true });
+      if (url.match(/\/api\/notifications\/.+\/read/) && method === "POST") return jsonResponse({ ok: true });
+      return Promise.reject(new Error("API unavailable in smoke test"));
+    }));
+
+    renderApp("/dashboard");
+    expect(await screen.findByRole("heading", { name: "Рабочий стол" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Уведомления" }));
+    await screen.findByText("Прочитать все");
+    fireEvent.click(screen.getByText("Прочитать все"));
+    // After read-all, the "Прочитать все" button disappears (unreadCount drops to 0)
+    await waitFor(() => expect(screen.queryByText("Прочитать все")).not.toBeInTheDocument());
+  });
 });

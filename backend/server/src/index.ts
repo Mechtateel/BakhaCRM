@@ -3,7 +3,7 @@ import cors from "cors";
 import "dotenv/config";
 import express from "express";
 import { rateLimit } from "express-rate-limit";
-import { and, desc, eq, gte, inArray, isNull, lt, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { createDb } from "../../../db/client.js";
 import { getAmoImportStats, runAmoImport } from "./import/amoImportService.js";
@@ -2060,18 +2060,20 @@ app.post("/api/tasks", makeRequireAuth(MANAGER_UP), async (req, res) => {
       })
       .returning();
     await writeLeadHistory(leadId, "task.created", { taskId: inserted.id, title: inserted.title, dueAt: inserted.dueAt }, actorId);
-    // Notify assignee if different from actor
-    if (inserted.assigneeId && inserted.assigneeId !== actorId) {
+    // Notify assignee (including self-assignment)
+    if (inserted.assigneeId) {
+      const isSelf = inserted.assigneeId === actorId;
       const dueStr = inserted.dueAt ? ` — ${new Date(inserted.dueAt).toLocaleDateString("ru-RU")}` : "";
       await createNotification({
         userId: inserted.assigneeId,
         actorId,
         type: "task.assigned",
-        title: "Вам поставили задачу",
+        title: isSelf ? "Вы поставили себе задачу" : "Вам поставили задачу",
         body: `${inserted.title}${dueStr}`,
         entityType: "task",
         entityId: inserted.id,
         link: inserted.leadId ? `/leads/${inserted.leadId}` : "/tasks",
+        dedupeKey: `task.assigned:${inserted.id}:${inserted.assigneeId}:created`,
       });
     }
     res.status(201).json({ task: inserted });
@@ -2109,19 +2111,23 @@ app.patch("/api/tasks/:id", makeRequireAuth(MANAGER_UP), async (req, res) => {
     const actorId = actorFromLocals(res);
     await db.update(tasks).set(updatePayload).where(eq(tasks.id, id));
     await writeLeadHistory(existingTask.leadId, "task.updated", { taskId: id, fields: Object.keys(updatePayload).filter((field) => field !== "updatedAt") }, actorId);
-    // Notify newly assigned user if assignee changed
-    if (assigneeId !== undefined && assigneeId !== null && assigneeId !== existingTask.assigneeId && assigneeId !== actorId) {
+    // Notify newly assigned user when assignee actually changes (including self-reassignment)
+    if (assigneeId !== undefined && assigneeId !== null && assigneeId !== existingTask.assigneeId) {
+      const isSelf = assigneeId === actorId;
       const newTitle = (typeof title === "string" ? title : null) ?? existingTask.title;
       const newLeadId = updatePayload.leadId ?? existingTask.leadId;
+      // Dedupe key uses minute precision — prevents duplicates from rapid double-submits
+      const dedupeKey = `task.reassigned:${id}:${assigneeId}:${nowIso().slice(0, 16)}`;
       await createNotification({
         userId: assigneeId,
         actorId,
         type: "task.assigned",
-        title: "Вам назначена задача",
+        title: isSelf ? "Вы назначили задачу себе" : "Вам назначили задачу",
         body: newTitle,
         entityType: "task",
         entityId: id,
         link: newLeadId ? `/leads/${newLeadId}` : "/tasks",
+        dedupeKey,
       });
     }
     const [updatedTask] = await db.select().from(tasks).where(eq(tasks.id, id));
@@ -3067,6 +3073,7 @@ function logAiManagerStartupWarnings() {
 }
 
 async function ensureNotificationsSchema() {
+  // Create table (includes dedupe_key for new installations)
   try {
     await db.run(sql.raw(`
       CREATE TABLE IF NOT EXISTS notifications (
@@ -3080,12 +3087,19 @@ async function ensureNotificationsSchema() {
         entity_id INTEGER,
         link TEXT,
         read_at TEXT,
+        dedupe_key TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
     `));
-    await db.run(sql.raw(`CREATE INDEX IF NOT EXISTS notifications_user_id_idx ON notifications(user_id)`));
   } catch { /* already exists */ }
+  // Add dedupe_key column to existing databases (idempotent)
+  try {
+    await db.run(sql.raw(`ALTER TABLE notifications ADD COLUMN dedupe_key TEXT`));
+  } catch { /* column already exists */ }
+  // Indexes
+  try { await db.run(sql.raw(`CREATE INDEX IF NOT EXISTS notifications_user_id_idx ON notifications(user_id)`)); } catch { /* */ }
+  try { await db.run(sql.raw(`CREATE UNIQUE INDEX IF NOT EXISTS notifications_dedupe_key_unique ON notifications(dedupe_key) WHERE dedupe_key IS NOT NULL`)); } catch { /* */ }
 }
 
 async function createNotification(data: {
@@ -3097,6 +3111,7 @@ async function createNotification(data: {
   entityType?: string | null;
   entityId?: number | null;
   link?: string | null;
+  dedupeKey?: string | null;
 }) {
   try {
     await db.insert(notifications).values({
@@ -3108,10 +3123,11 @@ async function createNotification(data: {
       entityType: data.entityType ?? null,
       entityId: data.entityId ?? null,
       link: data.link ?? null,
+      dedupeKey: data.dedupeKey ?? null,
       createdAt: nowIso(),
       updatedAt: nowIso(),
     });
-  } catch { /* non-critical — never block main operation */ }
+  } catch { /* non-critical — unique constraint on dedupeKey silently prevents duplicates */ }
 }
 
 // ── Notification endpoints ─────────────────────────────────────────────────────
@@ -3167,6 +3183,46 @@ async function ensureWappiSchema() {
   } catch { /* already exists */ }
 }
 
+/**
+ * Find tasks that are past due and not yet complete, then create
+ * a task.due notification for each assignee (deduplicated by dedupeKey).
+ * Safe to call repeatedly — unique index on dedupeKey prevents duplicates.
+ */
+async function scheduleDueReminders() {
+  try {
+    const now = nowIso();
+    const dueTasks = await db
+      .select()
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.status, "open"),
+          isNotNull(tasks.dueAt),
+          isNotNull(tasks.assigneeId),
+          lte(tasks.dueAt, now),
+        )
+      );
+
+    for (const task of dueTasks) {
+      if (!task.assigneeId || !task.dueAt) continue;
+      const dueStr = new Date(task.dueAt).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" });
+      await createNotification({
+        userId: task.assigneeId,
+        actorId: null,
+        type: "task.due",
+        title: "Время выполнить задачу",
+        body: `${task.title} — ${dueStr}`,
+        entityType: "task",
+        entityId: task.id,
+        link: task.leadId ? `/leads/${task.leadId}` : "/tasks",
+        dedupeKey: `task.due:${task.id}:${task.dueAt}`,
+      });
+    }
+  } catch (err) {
+    console.error("[REMINDERS] Error scheduling due reminders:", err instanceof Error ? err.message : err);
+  }
+}
+
 async function main() {
   await ensureTelephonySchema();
   await ensureAuthSchema();
@@ -3174,6 +3230,9 @@ async function main() {
   await ensureWappiSchema();
   await ensureNotificationsSchema();
   logAiManagerStartupWarnings();
+  // Run due-reminder check immediately, then every 60 s
+  void scheduleDueReminders();
+  setInterval(() => { void scheduleDueReminders(); }, 60_000);
   app.listen(port, () => {
     console.log(`Bakha CRM API listening on http://localhost:${port}`);
   });

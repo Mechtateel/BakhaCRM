@@ -293,6 +293,8 @@ export const notifications = sqliteTable("notifications", {
   entityId: integer("entity_id"),
   link: text("link"),
   readAt: text("read_at"),
+  /** Unique deduplication key — insert silently fails if duplicate. */
+  dedupeKey: text("dedupe_key"),
   ...timestamps
 });
 
