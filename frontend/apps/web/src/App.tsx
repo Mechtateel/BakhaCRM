@@ -115,6 +115,17 @@ type Task = {
   assigneeName?: string | null;
 };
 type Integration = { id: number; code: string; name: string; status: string; configJson?: string | null };
+type AppNotification = {
+  id: number;
+  type: string;
+  title: string;
+  body?: string | null;
+  entityType?: string | null;
+  entityId?: number | null;
+  link?: string | null;
+  readAt?: string | null;
+  createdAt: string;
+};
 type LeadNote = { id: number; body: string; createdAt: string; authorId?: number | null };
 type LeadCustomValue = { id: number; value: string | null; fieldName: string | null; fieldCode: string | null; fieldType: string | null };
 type CrmMessage = {
@@ -581,11 +592,88 @@ function LoginPage() {
 function AppShell({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const { tasks, leads } = useCrm();
+  const { tasks, leads, users } = useCrm();
   const notify = useToast();
   const [globalSearch, setGlobalSearch] = useState("");
   const [showSearchResults, setShowSearchResults] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
+
+  // ── Period picker ──────────────────────────────────────────────────────────
+  const [selectedPeriod, setSelectedPeriod] = useState("month");
+  const [showPeriodPicker, setShowPeriodPicker] = useState(false);
+  const periodRef = useRef<HTMLDivElement>(null);
+
+  const now = new Date();
+  const PERIODS = [
+    { value: "today", label: "Сегодня" },
+    { value: "yesterday", label: "Вчера" },
+    { value: "week", label: "Эта неделя" },
+    { value: "month", label: now.toLocaleDateString("ru-RU", { month: "long", year: "numeric" }).replace(/^./, (c) => c.toUpperCase()) },
+    { value: "prev_month", label: "Прошлый месяц" },
+  ] as const;
+  const periodLabel = PERIODS.find((p) => p.value === selectedPeriod)?.label ?? "Период";
+
+  // ── Manager filter ─────────────────────────────────────────────────────────
+  const [selectedManagerId, setSelectedManagerId] = useState<number | null>(null);
+  const [showManagerPicker, setShowManagerPicker] = useState(false);
+  const managerRef = useRef<HTMLDivElement>(null);
+
+  // ── Filters panel ──────────────────────────────────────────────────────────
+  const [showFilters, setShowFilters] = useState(false);
+  const filtersRef = useRef<HTMLDivElement>(null);
+
+  // ── Notification bell ──────────────────────────────────────────────────────
+  const [notifList, setNotifList] = useState<AppNotification[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [showNotifPanel, setShowNotifPanel] = useState(false);
+  const notifRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    async function fetchNotifs() {
+      try {
+        const data = await apiJson("/api/notifications", {}) as { notifications: AppNotification[]; unreadCount: number };
+        setNotifList(data.notifications ?? []);
+        setUnreadCount(data.unreadCount ?? 0);
+      } catch { /* silent — unauthenticated or server unavailable */ }
+    }
+    fetchNotifs();
+    const interval = setInterval(fetchNotifs, 30_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  async function handleMarkRead(id: number) {
+    try {
+      await apiJson(`/api/notifications/${id}/read`, { method: "POST" });
+      setNotifList((prev) => prev.map((n) => n.id === id ? { ...n, readAt: new Date().toISOString() } : n));
+      setUnreadCount((c) => Math.max(0, c - 1));
+    } catch { /* ignore */ }
+  }
+
+  async function handleReadAll() {
+    try {
+      await apiJson("/api/notifications/read-all", { method: "POST" });
+      setNotifList((prev) => prev.map((n) => ({ ...n, readAt: n.readAt ?? new Date().toISOString() })));
+      setUnreadCount(0);
+    } catch { /* ignore */ }
+  }
+
+  function handleNotifClick(n: AppNotification) {
+    if (!n.readAt) void handleMarkRead(n.id);
+    setShowNotifPanel(false);
+    if (n.link) navigate(n.link);
+  }
+
+  // Close all panels when clicking outside
+  useEffect(() => {
+    function onOutsideClick(e: MouseEvent) {
+      if (periodRef.current && !periodRef.current.contains(e.target as Node)) setShowPeriodPicker(false);
+      if (managerRef.current && !managerRef.current.contains(e.target as Node)) setShowManagerPicker(false);
+      if (filtersRef.current && !filtersRef.current.contains(e.target as Node)) setShowFilters(false);
+      if (notifRef.current && !notifRef.current.contains(e.target as Node)) setShowNotifPanel(false);
+    }
+    document.addEventListener("mousedown", onOutsideClick);
+    return () => document.removeEventListener("mousedown", onOutsideClick);
+  }, []);
 
   const searchResults = useMemo(() => {
     const q = globalSearch.trim();
@@ -755,13 +843,148 @@ function AppShell({ children }: { children: React.ReactNode }) {
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <ToolbarButton icon={CalendarDays} label="Июнь 2026" onClick={() => notify("Глобальный фильтр периода — в разработке. На kanban доступен поиск и фильтр по менеджеру.")} />
-              <ToolbarButton icon={Filter} label="Все менеджеры" onClick={() => notify("Глобальный фильтр менеджеров — в разработке. На kanban доступен локальный фильтр.")} />
-              <ToolbarButton icon={SlidersHorizontal} label="Фильтры" onClick={() => notify("Расширенные фильтры — в разработке.")} />
-              <button className="relative rounded-lg border border-slate-200 p-2.5 text-slate-600 transition hover:border-bakha-orange hover:text-bakha-orange" aria-label="Уведомления" onClick={() => notify("Центр уведомлений будет активирован после подключения всех интеграций.")}>
-                <Bell size={18} />
-                <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-bakha-orange" />
-              </button>
+              {/* ── Period picker ── */}
+              <div ref={periodRef} className="relative">
+                <button
+                  className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-bakha-orange hover:text-bakha-orange"
+                  onClick={() => setShowPeriodPicker((v) => !v)}
+                  aria-label="Период"
+                >
+                  <CalendarDays size={18} />
+                  {periodLabel}
+                </button>
+                {showPeriodPicker && (
+                  <div data-testid="period-dropdown" className="absolute left-0 top-full z-30 mt-1 w-44 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+                    {PERIODS.map((p) => (
+                      <button
+                        key={p.value}
+                        className={`flex w-full items-center px-4 py-2.5 text-left text-sm font-medium transition hover:bg-orange-50 hover:text-bakha-orange ${selectedPeriod === p.value ? "bg-orange-50 text-bakha-orange" : "text-slate-700"}`}
+                        onClick={() => { setSelectedPeriod(p.value); setShowPeriodPicker(false); }}
+                      >
+                        {p.value === selectedPeriod && <span className="mr-2 text-bakha-orange">✓</span>}
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* ── Manager picker (role-aware) ── */}
+              {isAdminOrOwner ? (
+                <div ref={managerRef} className="relative">
+                  <button
+                    className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-bakha-orange hover:text-bakha-orange"
+                    onClick={() => setShowManagerPicker((v) => !v)}
+                    aria-label="Фильтр по менеджеру"
+                  >
+                    <Filter size={18} />
+                    {selectedManagerId ? (users.find((u) => u.id === selectedManagerId)?.name ?? "Менеджер") : "Все менеджеры"}
+                  </button>
+                  {showManagerPicker && (
+                    <div className="absolute left-0 top-full z-30 mt-1 w-52 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+                      <button
+                        className={`flex w-full items-center px-4 py-2.5 text-left text-sm font-medium transition hover:bg-orange-50 hover:text-bakha-orange ${!selectedManagerId ? "bg-orange-50 text-bakha-orange" : "text-slate-700"}`}
+                        onClick={() => { setSelectedManagerId(null); setShowManagerPicker(false); }}
+                      >
+                        {!selectedManagerId && <span className="mr-2">✓</span>}
+                        Все менеджеры
+                      </button>
+                      {users.filter((u) => u.status === "active").map((u) => (
+                        <button
+                          key={u.id}
+                          className={`flex w-full items-center border-t border-slate-50 px-4 py-2.5 text-left text-sm font-medium transition hover:bg-orange-50 hover:text-bakha-orange ${selectedManagerId === u.id ? "bg-orange-50 text-bakha-orange" : "text-slate-700"}`}
+                          onClick={() => { setSelectedManagerId(u.id); setShowManagerPicker(false); }}
+                        >
+                          {selectedManagerId === u.id && <span className="mr-2">✓</span>}
+                          {u.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-500 cursor-default" title="Доступны только ваши данные">
+                  <Filter size={18} />
+                  {user.name}
+                </div>
+              )}
+
+              {/* ── Filters panel ── */}
+              <div ref={filtersRef} className="relative">
+                <button
+                  className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-bakha-orange hover:text-bakha-orange"
+                  onClick={() => setShowFilters((v) => !v)}
+                  aria-label="Фильтры"
+                >
+                  <SlidersHorizontal size={18} />
+                  Фильтры
+                </button>
+                {showFilters && (
+                  <div data-testid="filters-panel" className="absolute right-0 top-full z-30 mt-1 w-72 rounded-xl border border-slate-200 bg-white p-4 shadow-xl">
+                    <div className="mb-3 flex items-center justify-between">
+                      <h3 className="text-sm font-semibold text-slate-900">Фильтры</h3>
+                      <button onClick={() => setShowFilters(false)} className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"><X size={14} /></button>
+                    </div>
+                    {((): React.ReactNode => {
+                      const path = location.pathname;
+                      if (path === "/tasks") return <p className="text-sm text-slate-500">Используйте строку поиска на странице Задачи для фильтрации по названию, клиенту или типу задачи.</p>;
+                      if (path === "/sales" || path.startsWith("/sales")) return <p className="text-sm text-slate-500">Используйте поиск и фильтр по менеджеру на странице Отдел продаж.</p>;
+                      if (path === "/measurements") return <p className="text-sm text-slate-500">Используйте поиск на странице Замер для фильтрации по клиенту или дате.</p>;
+                      if (path === "/chats") return <p className="text-sm text-slate-500">Используйте фильтры «Все», «Без ответа», «ИИ» прямо в списке чатов.</p>;
+                      if (path === "/dashboard") return <p className="text-sm text-slate-500">На рабочем столе отображаются актуальные задачи и сделки. Расширенные фильтры доступны в каждом разделе.</p>;
+                      return <p className="text-sm text-slate-500">Для этой страницы дополнительные фильтры не нужны. Перейдите в нужный раздел.</p>;
+                    })()}
+                  </div>
+                )}
+              </div>
+
+              {/* ── Notification bell ── */}
+              <div ref={notifRef} className="relative">
+                <button
+                  className="relative rounded-lg border border-slate-200 p-2.5 text-slate-600 transition hover:border-bakha-orange hover:text-bakha-orange"
+                  aria-label="Уведомления"
+                  onClick={() => setShowNotifPanel((v) => !v)}
+                >
+                  <Bell size={18} />
+                  {unreadCount > 0 && (
+                    <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-bakha-orange px-0.5 text-[9px] font-bold text-white">
+                      {unreadCount > 9 ? "9+" : unreadCount}
+                    </span>
+                  )}
+                </button>
+                {showNotifPanel && (
+                  <div className="absolute right-0 top-full z-30 mt-2 w-80 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+                    <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+                      <h3 className="text-sm font-semibold text-slate-900">Уведомления</h3>
+                      {unreadCount > 0 && (
+                        <button onClick={() => void handleReadAll()} className="text-xs font-medium text-bakha-orange transition hover:text-orange-600">
+                          Прочитать все
+                        </button>
+                      )}
+                    </div>
+                    <div className="max-h-96 overflow-y-auto">
+                      {notifList.length === 0 ? (
+                        <div className="px-4 py-8 text-center text-sm text-slate-400">Нет уведомлений</div>
+                      ) : (
+                        notifList.map((n) => (
+                          <button
+                            key={n.id}
+                            onClick={() => handleNotifClick(n)}
+                            className={`flex w-full flex-col gap-0.5 border-b border-slate-50 px-4 py-3 text-left transition hover:bg-orange-50 ${!n.readAt ? "bg-orange-50/60" : ""}`}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <p className={`text-sm font-medium leading-snug ${!n.readAt ? "text-slate-900" : "text-slate-600"}`}>{n.title}</p>
+                              {!n.readAt && <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-bakha-orange" />}
+                            </div>
+                            {n.body && <p className="line-clamp-2 text-xs text-slate-500">{n.body}</p>}
+                            <p className="text-[10px] text-slate-400">{formatDate(n.createdAt)}</p>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
               <button className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-bakha-orange" onClick={() => notify(`${user.name} · ${user.roleTitle ?? "Сотрудник"}`)}>
                 <UserRound size={18} />
                 <span className="hidden sm:inline">{user.name}</span>

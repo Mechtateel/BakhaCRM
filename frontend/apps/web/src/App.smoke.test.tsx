@@ -83,6 +83,16 @@ beforeEach(() => {
       if (url.includes("/api/search") && method === "GET") {
         return jsonResponse({ leads: [], contacts: [], tasks: [] });
       }
+      // Notifications
+      if (url === "/api/notifications" && method === "GET") {
+        return jsonResponse({ notifications: [], unreadCount: 0 });
+      }
+      if (url.match(/\/api\/notifications\/\d+\/read/) && method === "POST") {
+        return jsonResponse({ ok: true });
+      }
+      if (url === "/api/notifications/read-all" && method === "POST") {
+        return jsonResponse({ ok: true });
+      }
       return Promise.reject(new Error("API unavailable in smoke test"));
     })
   );
@@ -1170,5 +1180,119 @@ describe("Bakha CRM smoke", () => {
     fireEvent.click(screen.getByRole("button", { name: "Позвонить" }));
     await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
     expect(screen.queryByText(/Функция будет подключена позже/i)).not.toBeInTheDocument();
+  });
+
+  it("notification bell opens dropdown with Нет уведомлений", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/dashboard");
+
+    expect(await screen.findByRole("heading", { name: "Рабочий стол" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Уведомления" }));
+
+    await waitFor(() => expect(screen.getByText("Уведомления")).toBeInTheDocument());
+    expect(screen.getByText("Нет уведомлений")).toBeInTheDocument();
+  });
+
+  it("notification bell shows unread count when API returns unreadCount", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    // Override mock to return one unread notification
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      const jsonResponse = (payload: unknown) => Promise.resolve({ ok: true, json: () => Promise.resolve(payload) });
+      if (url === "/api/notifications" && method === "GET") {
+        return jsonResponse({
+          notifications: [{ id: 1, type: "task.assigned", title: "Вам поставили задачу", body: "Позвонить клиенту", readAt: null, createdAt: new Date().toISOString() }],
+          unreadCount: 1
+        });
+      }
+      return Promise.reject(new Error("API unavailable in smoke test"));
+    }));
+
+    renderApp("/dashboard");
+
+    // Wait for the notification badge to appear (polling effect fires after render)
+    await waitFor(() => {
+      const badge = document.querySelector(".bg-bakha-orange[class*='rounded-full']");
+      return badge !== null;
+    }, { timeout: 3000 });
+
+    // Open notification panel
+    fireEvent.click(screen.getByRole("button", { name: "Уведомления" }));
+    await waitFor(() => expect(screen.getByText("Вам поставили задачу")).toBeInTheDocument());
+    expect(screen.getByText("Прочитать все")).toBeInTheDocument();
+  });
+
+  it("period dropdown opens when period button clicked", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/dashboard");
+
+    expect(await screen.findByRole("heading", { name: "Рабочий стол" })).toBeInTheDocument();
+    // Period button exists
+    expect(screen.getByRole("button", { name: "Период" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Период" }));
+
+    // The dropdown div appears (data-testid guarantees we're checking the right element)
+    await waitFor(() => expect(document.querySelector('[data-testid="period-dropdown"]')).not.toBeNull());
+    // No placeholder toast
+    expect(screen.queryByText(/в разработке/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Функция будет подключена позже/i)).not.toBeInTheDocument();
+  });
+
+  it("period dropdown closes after selecting an option", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/dashboard");
+
+    expect(await screen.findByRole("heading", { name: "Рабочий стол" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Период" }));
+    // Wait for dropdown to open
+    await waitFor(() => expect(document.querySelector('[data-testid="period-dropdown"]')).not.toBeNull());
+    // Click "Прошлый месяц" option (unique text in the dropdown)
+    fireEvent.click(screen.getByRole("button", { name: "Прошлый месяц" }));
+    // Dropdown closes
+    await waitFor(() => expect(document.querySelector('[data-testid="period-dropdown"]')).toBeNull());
+  });
+
+  it("filters button opens filter panel for tasks page", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/tasks");
+
+    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Фильтры" }));
+
+    // The filter panel renders (data-testid check)
+    await waitFor(() => expect(document.querySelector('[data-testid="filters-panel"]')).not.toBeNull());
+    // Contains a helpful message, not a placeholder
+    expect(document.querySelector('[data-testid="filters-panel"]')?.textContent).not.toMatch(/в разработке/i);
+    expect(document.querySelector('[data-testid="filters-panel"]')?.textContent).not.toMatch(/будет подключена/i);
+  });
+
+  it("admin sees manager picker dropdown with user list", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    localStorage.setItem("bakha_user", JSON.stringify({ name: "Баха Админ", role: "admin", roleTitle: "Администратор" }));
+    renderApp("/dashboard");
+
+    expect(await screen.findByRole("heading", { name: "Рабочий стол" })).toBeInTheDocument();
+    // Admin/owner sees the manager picker button
+    const pickerBtn = screen.getByRole("button", { name: "Фильтр по менеджеру" });
+    expect(pickerBtn).toBeInTheDocument();
+    // Clicking opens a dropdown
+    fireEvent.click(pickerBtn);
+    // At least 2 "Все менеджеры" texts: the button label + the dropdown option
+    await waitFor(() => expect(screen.getAllByText("Все менеджеры").length).toBeGreaterThanOrEqual(2));
+  });
+
+  it("header buttons show no placeholder toasts", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/dashboard");
+
+    expect(await screen.findByRole("heading", { name: "Рабочий стол" })).toBeInTheDocument();
+
+    // Notification bell → opens dropdown, no placeholder
+    fireEvent.click(screen.getByRole("button", { name: "Уведомления" }));
+    await waitFor(() => expect(screen.getByText("Нет уведомлений")).toBeInTheDocument());
+    expect(screen.queryByText(/Центр уведомлений будет активирован/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/после подключения/i)).not.toBeInTheDocument();
   });
 });

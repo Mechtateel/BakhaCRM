@@ -31,6 +31,7 @@ import {
   leads,
   messages,
   notes,
+  notifications,
   pbxUserMappings,
   pipelines,
   roles,
@@ -2042,6 +2043,7 @@ app.post("/api/tasks", makeRequireAuth(MANAGER_UP), async (req, res) => {
   }
 
   try {
+    const actorId = actorFromLocals(res);
     const [inserted] = await db
       .insert(tasks)
       .values({
@@ -2057,7 +2059,21 @@ app.post("/api/tasks", makeRequireAuth(MANAGER_UP), async (req, res) => {
         updatedAt: nowIso()
       })
       .returning();
-    await writeLeadHistory(leadId, "task.created", { taskId: inserted.id, title: inserted.title, dueAt: inserted.dueAt }, actorFromLocals(res));
+    await writeLeadHistory(leadId, "task.created", { taskId: inserted.id, title: inserted.title, dueAt: inserted.dueAt }, actorId);
+    // Notify assignee if different from actor
+    if (inserted.assigneeId && inserted.assigneeId !== actorId) {
+      const dueStr = inserted.dueAt ? ` — ${new Date(inserted.dueAt).toLocaleDateString("ru-RU")}` : "";
+      await createNotification({
+        userId: inserted.assigneeId,
+        actorId,
+        type: "task.assigned",
+        title: "Вам поставили задачу",
+        body: `${inserted.title}${dueStr}`,
+        entityType: "task",
+        entityId: inserted.id,
+        link: inserted.leadId ? `/leads/${inserted.leadId}` : "/tasks",
+      });
+    }
     res.status(201).json({ task: inserted });
   } catch (error) {
     responseError(res, 500, error instanceof Error ? error.message : "Task create failed");
@@ -2090,8 +2106,24 @@ app.patch("/api/tasks/:id", makeRequireAuth(MANAGER_UP), async (req, res) => {
   if (typeof status === "string") updatePayload.status = status;
 
   try {
+    const actorId = actorFromLocals(res);
     await db.update(tasks).set(updatePayload).where(eq(tasks.id, id));
-    await writeLeadHistory(existingTask.leadId, "task.updated", { taskId: id, fields: Object.keys(updatePayload).filter((field) => field !== "updatedAt") }, actorFromLocals(res));
+    await writeLeadHistory(existingTask.leadId, "task.updated", { taskId: id, fields: Object.keys(updatePayload).filter((field) => field !== "updatedAt") }, actorId);
+    // Notify newly assigned user if assignee changed
+    if (assigneeId !== undefined && assigneeId !== null && assigneeId !== existingTask.assigneeId && assigneeId !== actorId) {
+      const newTitle = (typeof title === "string" ? title : null) ?? existingTask.title;
+      const newLeadId = updatePayload.leadId ?? existingTask.leadId;
+      await createNotification({
+        userId: assigneeId,
+        actorId,
+        type: "task.assigned",
+        title: "Вам назначена задача",
+        body: newTitle,
+        entityType: "task",
+        entityId: id,
+        link: newLeadId ? `/leads/${newLeadId}` : "/tasks",
+      });
+    }
     const [updatedTask] = await db.select().from(tasks).where(eq(tasks.id, id));
     res.json({ task: updatedTask });
   } catch (error) {
@@ -3034,6 +3066,94 @@ function logAiManagerStartupWarnings() {
   }
 }
 
+async function ensureNotificationsSchema() {
+  try {
+    await db.run(sql.raw(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        actor_id INTEGER,
+        type TEXT NOT NULL DEFAULT 'info',
+        title TEXT NOT NULL,
+        body TEXT,
+        entity_type TEXT,
+        entity_id INTEGER,
+        link TEXT,
+        read_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `));
+    await db.run(sql.raw(`CREATE INDEX IF NOT EXISTS notifications_user_id_idx ON notifications(user_id)`));
+  } catch { /* already exists */ }
+}
+
+async function createNotification(data: {
+  userId: number;
+  actorId?: number | null;
+  type: string;
+  title: string;
+  body?: string | null;
+  entityType?: string | null;
+  entityId?: number | null;
+  link?: string | null;
+}) {
+  try {
+    await db.insert(notifications).values({
+      userId: data.userId,
+      actorId: data.actorId ?? null,
+      type: data.type,
+      title: data.title,
+      body: data.body ?? null,
+      entityType: data.entityType ?? null,
+      entityId: data.entityId ?? null,
+      link: data.link ?? null,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    });
+  } catch { /* non-critical — never block main operation */ }
+}
+
+// ── Notification endpoints ─────────────────────────────────────────────────────
+
+app.get("/api/notifications", makeRequireAuth(), async (_req, res) => {
+  const userId = actorFromLocals(res);
+  if (!userId) { res.status(401).json({ error: "Unauthorized" }); return; }
+  try {
+    const rows = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, userId))
+      .orderBy(desc(notifications.createdAt))
+      .limit(50);
+    const unreadCount = rows.filter((n) => !n.readAt).length;
+    res.json({ notifications: rows, unreadCount });
+  } catch {
+    res.json({ notifications: [], unreadCount: 0 });
+  }
+});
+
+app.post("/api/notifications/:id/read", makeRequireAuth(), async (req, res) => {
+  const id = Number(req.params.id);
+  const userId = actorFromLocals(res);
+  if (!userId) { res.status(401).json({ error: "Unauthorized" }); return; }
+  await db
+    .update(notifications)
+    .set({ readAt: nowIso(), updatedAt: nowIso() })
+    .where(and(eq(notifications.id, id), eq(notifications.userId, userId)));
+  res.json({ ok: true });
+});
+
+app.post("/api/notifications/read-all", makeRequireAuth(), async (_req, res) => {
+  const userId = actorFromLocals(res);
+  if (!userId) { res.status(401).json({ error: "Unauthorized" }); return; }
+  await db
+    .update(notifications)
+    .set({ readAt: nowIso(), updatedAt: nowIso() })
+    .where(and(eq(notifications.userId, userId), isNull(notifications.readAt)));
+  res.json({ ok: true });
+});
+
 async function ensureWappiSchema() {
   // DB-level duplicate prevention: one row per unique externalMessageId (nulls allowed to coexist)
   try {
@@ -3052,6 +3172,7 @@ async function main() {
   await ensureAuthSchema();
   await ensureAiSchema();
   await ensureWappiSchema();
+  await ensureNotificationsSchema();
   logAiManagerStartupWarnings();
   app.listen(port, () => {
     console.log(`Bakha CRM API listening on http://localhost:${port}`);

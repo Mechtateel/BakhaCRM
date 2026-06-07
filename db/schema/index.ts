@@ -281,6 +281,21 @@ export const settings = sqliteTable("settings", {
   ...timestamps
 });
 
+/** Internal notification for a CRM user (task assignments, mentions, etc.). */
+export const notifications = sqliteTable("notifications", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id").notNull(),
+  actorId: integer("actor_id"),
+  type: text("type").notNull().default("info"),
+  title: text("title").notNull(),
+  body: text("body"),
+  entityType: text("entity_type"),
+  entityId: integer("entity_id"),
+  link: text("link"),
+  readAt: text("read_at"),
+  ...timestamps
+});
+
 /** Records every AI Manager request, response, error, and skip. */
 export const aiEvents = sqliteTable("ai_events", {
   id: integer("id").primaryKey({ autoIncrement: true }),
