@@ -4225,7 +4225,7 @@ function TasksPage() {
 
   return (
     <>
-      <PageHeader title="Задачи" subtitle="Kanban по звонкам, замерам, КП и монтажам" action="+ Поставить задачу" onAction={() => openCreateTask()} />
+      <PageHeader title="Задачи" subtitle="Kanban по звонкам, замерам, КП и монтажам" action="Поставить задачу" onAction={() => openCreateTask()} />
       <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <KpiCard icon={AlertTriangle} label="Просроченные" value={String(overdue)} caption="срочно обработать" tone="red" />
         <KpiCard icon={CalendarDays} label="Сегодня" value={String(today)} caption="в работе" tone="orange" />
