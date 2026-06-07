@@ -1,0 +1,29 @@
+{
+  "name": "bakha-crm",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "frontend/apps/web",
+    "backend/server"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c yellow,cyan \"npm run dev --workspace @bakha/server\" \"npm run dev --workspace @bakha/web\"",
+    "dev:web": "npm run dev --workspace @bakha/web",
+    "dev:server": "npm run dev --workspace @bakha/server",
+    "build": "npm run build --workspaces",
+    "db:migrate": "tsx db/migrate.ts",
+    "db:seed": "tsx db/seed/seed.ts",
+    "import:amo": "tsx backend/server/src/import/amoImportCli.ts import",
+    "import:amo:stats": "tsx backend/server/src/import/amoImportCli.ts stats",
+    "import:amo:dry-run": "tsx backend/server/src/import/amoImportCli.ts dry-run",
+    "import:amo:verify": "tsx backend/server/src/import/amoImportCli.ts verify",
+    "test:smoke": "npm run test:smoke --workspace @bakha/web",
+    "typecheck": "npm run typecheck --workspaces"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
