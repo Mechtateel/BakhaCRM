@@ -4078,6 +4078,13 @@ function TasksPage() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [activeDragTask, setActiveDragTask] = useState<Task | null>(null);
   const [pendingMove, setPendingMove] = useState<{ task: Task; defaultDate: Date } | null>(null);
+  const [showCreateTask, setShowCreateTask] = useState(false);
+  const [createTaskDefaults, setCreateTaskDefaults] = useState<CreateTaskDefaults | undefined>();
+
+  function openCreateTask(defaults?: CreateTaskDefaults) {
+    setCreateTaskDefaults(defaults);
+    setShowCreateTask(true);
+  }
 
   const allTasks = tasks.map((taskItem) => ({ ...taskItem, ...taskOverrides[taskItem.id] }));
   const visibleTasks = allTasks.filter((taskItem) => {
@@ -4137,10 +4144,14 @@ function TasksPage() {
     }
   }
 
-  async function snoozeTask(taskId: number) {
+  async function snoozeTask(taskId: number, mode: "30m" | "tomorrow" = "tomorrow") {
     const nextDate = new Date();
-    nextDate.setDate(nextDate.getDate() + 2);
-    nextDate.setHours(10, 0, 0, 0);
+    if (mode === "30m") {
+      nextDate.setMinutes(nextDate.getMinutes() + 30);
+    } else {
+      nextDate.setDate(nextDate.getDate() + 1);
+      nextDate.setHours(10, 0, 0, 0);
+    }
     setTaskOverrides((cur) => ({ ...cur, [taskId]: { status: "open", dueAt: nextDate.toISOString() } }));
     try {
       await apiJson(`/api/tasks/${taskId}`, {
@@ -4214,7 +4225,7 @@ function TasksPage() {
 
   return (
     <>
-      <PageHeader title="Задачи" subtitle="Kanban по звонкам, замерам, КП и монтажам" />
+      <PageHeader title="Задачи" subtitle="Kanban по звонкам, замерам, КП и монтажам" action="+ Поставить задачу" onAction={() => openCreateTask()} />
       <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <KpiCard icon={AlertTriangle} label="Просроченные" value={String(overdue)} caption="срочно обработать" tone="red" />
         <KpiCard icon={CalendarDays} label="Сегодня" value={String(today)} caption="в работе" tone="orange" />
@@ -4222,9 +4233,33 @@ function TasksPage() {
         <KpiCard icon={Sparkles} label="Высокий приоритет" value={String(high)} caption="важные касания" tone="slate" />
       </div>
       <div className="mb-4 flex flex-wrap gap-2">
-        <ToolbarButton icon={Phone} label="Позвонить" />
-        <ToolbarButton icon={MessageSquare} label="Написать" />
-        <ToolbarButton icon={Ruler} label="Назначить замер" />
+        <button
+          className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-bakha-orange hover:text-bakha-orange"
+          onClick={() => {
+            const d = new Date(); d.setMinutes(0, 0, 0); d.setHours(d.getHours() + 1);
+            openCreateTask({ type: "call", title: "Позвонить клиенту", dueAt: d.toISOString() });
+          }}
+        >
+          <Phone size={18} /> Позвонить
+        </button>
+        <button
+          className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-bakha-orange hover:text-bakha-orange"
+          onClick={() => {
+            const d = new Date(); d.setMinutes(0, 0, 0); d.setHours(d.getHours() + 1);
+            openCreateTask({ type: "message", title: "Написать клиенту", dueAt: d.toISOString() });
+          }}
+        >
+          <MessageSquare size={18} /> Написать
+        </button>
+        <button
+          className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-bakha-orange hover:text-bakha-orange"
+          onClick={() => {
+            const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(10, 0, 0, 0);
+            openCreateTask({ type: "measurement", title: "Назначить замер", dueAt: d.toISOString() });
+          }}
+        >
+          <Ruler size={18} /> Назначить замер
+        </button>
       </div>
       <div className="mb-4 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
         <div className="relative">
@@ -4260,7 +4295,7 @@ function TasksPage() {
                     task={taskItem}
                     onOpenDetail={(t) => setSelectedTask(t)}
                     onComplete={completeTask}
-                    onSnooze={snoozeTask}
+                    onSnooze={(id, mode) => void snoozeTask(id, mode)}
                   />
                 ))}
                 {items.length > TASK_COLUMN_LIMIT ? (
@@ -4311,7 +4346,200 @@ function TasksPage() {
           onCancel={() => setPendingMove(null)}
         />
       ) : null}
+
+      {/* Create task modal — opened via header button or quick action buttons */}
+      {showCreateTask ? (
+        <CreateTaskModal
+          defaults={createTaskDefaults}
+          onClose={() => setShowCreateTask(false)}
+          onCreated={() => { setShowCreateTask(false); void refresh(); }}
+        />
+      ) : null}
     </>
+  );
+}
+
+// ── Create Task Modal ─────────────────────────────────────────────────────────
+type CreateTaskDefaults = { type?: string; title?: string; dueAt?: string };
+
+function CreateTaskModal({
+  defaults,
+  onClose,
+  onCreated,
+}: {
+  defaults?: CreateTaskDefaults;
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const { users, leads } = useCrm();
+  const notify = useToast();
+
+  const defaultDueAt = () => {
+    if (defaults?.dueAt) return toInputDateTime(defaults.dueAt);
+    const d = new Date(); d.setMinutes(0, 0, 0); d.setHours(d.getHours() + 1);
+    return toInputDateTime(d.toISOString());
+  };
+
+  const [title, setTitle] = useState(defaults?.title ?? "");
+  const [type, setType] = useState(defaults?.type ?? "call");
+  const [dueAt, setDueAt] = useState(defaultDueAt);
+  const [priority, setPriority] = useState("normal");
+  const [responsibleUserId, setResponsibleUserId] = useState("");
+  const [leadId, setLeadId] = useState("");
+  const [description, setDescription] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function handleCreate() {
+    if (!title.trim()) { notify("Укажите название задачи."); return; }
+    if (!dueAt) { notify("Укажите дату задачи."); return; }
+    setSaving(true);
+    try {
+      await apiJson("/api/tasks", {
+        method: "POST",
+        body: JSON.stringify({
+          title: title.trim(),
+          type,
+          dueAt: new Date(dueAt).toISOString(),
+          priority,
+          responsibleUserId: responsibleUserId ? Number(responsibleUserId) : null,
+          leadId: leadId ? Number(leadId) : null,
+          description: description.trim() || null,
+        }),
+      });
+      notify("Задача создана.");
+      onCreated();
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Не удалось создать задачу. Проверьте соединение.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(15,23,42,0.45)", backdropFilter: "blur(4px)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="relative w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-5 py-4">
+          <h2 className="text-lg font-bold text-slate-900">Новая задача</h2>
+          <button onClick={onClose} className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-200 hover:text-slate-700">
+            <X size={18} />
+          </button>
+        </div>
+        {/* Body */}
+        <div className="space-y-3 overflow-y-auto px-5 py-4 max-h-[70vh]">
+          {/* Title */}
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-500">Название задачи *</label>
+            <input
+              autoFocus
+              className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none transition focus:border-bakha-orange focus:bg-white focus:ring-4 focus:ring-orange-100"
+              placeholder="Позвонить клиенту, Назначить замер..."
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") void handleCreate(); }}
+            />
+          </div>
+          {/* Type + Priority */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">Тип</label>
+              <select
+                className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-bakha-orange"
+                value={type}
+                onChange={(e) => setType(e.target.value)}
+              >
+                <option value="call">📞 Звонок</option>
+                <option value="message">💬 Сообщение</option>
+                <option value="measurement">📐 Замер</option>
+                <option value="installation">🔨 Монтаж</option>
+                <option value="quote">📄 КП</option>
+                <option value="other">📌 Другое</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">Приоритет</label>
+              <select
+                className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-bakha-orange"
+                value={priority}
+                onChange={(e) => setPriority(e.target.value)}
+              >
+                <option value="normal">Обычный</option>
+                <option value="high">Высокий</option>
+                <option value="low">Низкий</option>
+              </select>
+            </div>
+          </div>
+          {/* Date + Assignee */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">Дата и время *</label>
+              <input
+                type="datetime-local"
+                className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:border-bakha-orange focus:ring-4 focus:ring-orange-100"
+                value={dueAt}
+                onChange={(e) => setDueAt(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">Ответственный</label>
+              <select
+                className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-bakha-orange"
+                value={responsibleUserId}
+                onChange={(e) => setResponsibleUserId(e.target.value)}
+              >
+                <option value="">Не назначен</option>
+                {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+            </div>
+          </div>
+          {/* Lead */}
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-500">Связанная сделка (необязательно)</label>
+            <select
+              className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-bakha-orange"
+              value={leadId}
+              onChange={(e) => setLeadId(e.target.value)}
+            >
+              <option value="">Без сделки</option>
+              {leads.slice(0, 100).map((l) => (
+                <option key={l.id} value={l.id}>{l.title}{l.contactName ? ` — ${l.contactName}` : ""}</option>
+              ))}
+            </select>
+          </div>
+          {/* Description */}
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-500">Комментарий (необязательно)</label>
+            <textarea
+              className="w-full resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none transition focus:border-bakha-orange focus:ring-4 focus:ring-orange-100"
+              rows={2}
+              placeholder="Уточнить адрес, время, детали..."
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+            />
+          </div>
+        </div>
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-3 border-t border-slate-200 px-5 py-4">
+          <button
+            onClick={onClose}
+            className="rounded-lg bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-200"
+          >
+            Отмена
+          </button>
+          <button
+            onClick={() => void handleCreate()}
+            disabled={saving}
+            className="rounded-lg bg-bakha-orange px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-orange-500/20 transition hover:bg-orange-600 disabled:opacity-60"
+          >
+            {saving ? "Создание..." : "Создать задачу"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -4392,22 +4620,24 @@ function DraggableTaskCard({
   task: Task;
   onOpenDetail: (task: Task) => void;
   onComplete: (id: number) => void;
-  onSnooze: (id: number) => void;
+  onSnooze: (id: number, mode: "30m" | "tomorrow") => void;
 }) {
   const preventNextClick = useRef(false);
+  const [snoozeOpen, setSnoozeOpen] = useState(false);
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `task-${task.id}`,
     data: { task },
   });
 
   useEffect(() => {
-    if (isDragging) preventNextClick.current = true;
+    if (isDragging) { preventNextClick.current = true; setSnoozeOpen(false); }
   }, [isDragging]);
 
   const typeLabel: Record<string, string> = {
     call: "📞 Звонок", message: "💬 Сообщение",
     measurement: "📐 Замер", quote: "📄 КП",
     meeting: "🤝 Встреча", other: "📌 Другое",
+    installation: "🔨 Монтаж",
   };
 
   return (
@@ -4445,13 +4675,31 @@ function DraggableTaskCard({
           </button>
         ) : null}
         {task.status !== "done" ? (
-          <button
-            data-no-drag-scroll
-            className="rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-200"
-            onClick={() => onSnooze(task.id)}
-          >
-            Отложить
-          </button>
+          <div className="relative" data-no-drag-scroll>
+            <button
+              className="rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-200"
+              onClick={() => setSnoozeOpen((v) => !v)}
+              aria-label="Отложить"
+            >
+              Отложить ▾
+            </button>
+            {snoozeOpen && (
+              <div className="absolute bottom-full left-0 z-20 mb-1 flex flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
+                <button
+                  className="whitespace-nowrap px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-orange-50 hover:text-bakha-orange"
+                  onClick={() => { onSnooze(task.id, "30m"); setSnoozeOpen(false); }}
+                >
+                  +30 минут
+                </button>
+                <button
+                  className="whitespace-nowrap border-t border-slate-100 px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-orange-50 hover:text-bakha-orange"
+                  onClick={() => { onSnooze(task.id, "tomorrow"); setSnoozeOpen(false); }}
+                >
+                  Завтра 10:00
+                </button>
+              </div>
+            )}
+          </div>
         ) : null}
         {task.leadId ? (
           <Link

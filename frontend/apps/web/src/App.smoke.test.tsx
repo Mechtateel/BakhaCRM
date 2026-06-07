@@ -1063,4 +1063,112 @@ describe("Bakha CRM smoke", () => {
     // Snooze button exists in modal footer
     expect(screen.getByRole("button", { name: "+30 мин" })).toBeInTheDocument();
   });
+
+  it("tasks page shows + Поставить задачу button", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/tasks");
+
+    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Поставить задачу/i })).toBeInTheDocument();
+  });
+
+  it("clicking + Поставить задачу opens create task modal", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/tasks");
+
+    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Поставить задачу/i }));
+
+    await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
+    expect(screen.getByPlaceholderText("Позвонить клиенту, Назначить замер...")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Создать задачу" })).toBeInTheDocument();
+  });
+
+  it("quick Позвонить opens create task modal with call type prefilled", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/tasks");
+
+    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    // Use exact name "Позвонить" to match only the quick-action button (not the DND card div
+    // whose accessible name contains the full card text including "Позвонить клиенту …")
+    fireEvent.click(screen.getByRole("button", { name: "Позвонить" }));
+
+    await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
+    const titleInput = screen.getByPlaceholderText("Позвонить клиенту, Назначить замер...") as HTMLInputElement;
+    expect(titleInput.value).toBe("Позвонить клиенту");
+  });
+
+  it("quick Написать opens create task modal with message type prefilled", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/tasks");
+
+    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Написать" }));
+
+    await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
+    const titleInput = screen.getByPlaceholderText("Позвонить клиенту, Назначить замер...") as HTMLInputElement;
+    expect(titleInput.value).toBe("Написать клиенту");
+  });
+
+  it("quick Назначить замер opens create task modal with measurement type prefilled", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/tasks");
+
+    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Назначить замер" }));
+
+    await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
+    const titleInput = screen.getByPlaceholderText("Позвонить клиенту, Назначить замер...") as HTMLInputElement;
+    expect(titleInput.value).toBe("Назначить замер");
+  });
+
+  it("postpone button on task card shows snooze options", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/tasks");
+
+    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    // Use exact aria-label "Отложить" to match the actual snooze button,
+    // not the DND card div whose long accessible name also contains "Отложить".
+    const snoozeBtns = await screen.findAllByRole("button", { name: "Отложить" });
+    fireEvent.click(snoozeBtns[0]);
+
+    await screen.findByText("+30 минут");
+    expect(screen.getByText("Завтра 10:00")).toBeInTheDocument();
+  });
+
+  it("task card Выполнить triggers completion and shows toast", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/tasks");
+
+    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    // Click first Выполнить button on a card
+    const completeBtn = (await screen.findAllByRole("button", { name: "Выполнить" }))[0];
+    fireEvent.click(completeBtn);
+
+    await waitFor(() => expect(screen.getByText("Задача выполнена.")).toBeInTheDocument());
+  });
+
+  it("task card Сделка link points to correct lead", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/tasks");
+
+    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+    // Seed task 1 has leadId=1 — verify a Сделка → link exists pointing to /leads/1
+    const dealLinks = await screen.findAllByRole("link", { name: /Сделка/i });
+    expect(dealLinks.length).toBeGreaterThan(0);
+    const firstLink = dealLinks[0] as HTMLAnchorElement;
+    expect(firstLink.href).toContain("/leads/");
+  });
+
+  it("task buttons do not show placeholder toasts", async () => {
+    localStorage.setItem("bakha_token", "demo-token");
+    renderApp("/tasks");
+
+    expect(await screen.findByText("Kanban по звонкам, замерам, КП и монтажам")).toBeInTheDocument();
+
+    // Click "Позвонить" — must open modal, not show placeholder toast
+    fireEvent.click(screen.getByRole("button", { name: "Позвонить" }));
+    await waitFor(() => expect(screen.getByText("Новая задача")).toBeInTheDocument());
+    expect(screen.queryByText(/Функция будет подключена позже/i)).not.toBeInTheDocument();
+  });
 });
