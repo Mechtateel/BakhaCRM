@@ -1,36 +1,62 @@
-# Bakha CRM
+# BakhaCRM
 
-MVP CRM for Bakha Potolok: React + Vite + TypeScript frontend, Node.js + Express API, SQLite with Drizzle schema and local migrations.
+BakhaCRM is a customer relationship management (CRM) application developed as a web-based project. It includes a React frontend and a Node.js backend.
 
-## Commands
+## Technology Stack
+
+**Frontend**
+- React
+- TypeScript
+- Vite
+- React Router
+
+**Backend**
+- Node.js
+- Express
+- TypeScript
+- Drizzle ORM
+- libSQL client
+
+## Project Structure
+
+The repository is organized as a workspace containing:
+- `frontend/apps/web` — web application
+- `backend/server` — API server
+- Database migration and seed scripts
+
+## Development
+
+Requirements: Node.js and npm.
+
+Install dependencies from the repository root:
 
 ```bash
 npm install
+```
+
+Run database migrations and seed scripts according to the project's local environment configuration:
+
+```bash
 npm run db:migrate
 npm run db:seed
+```
+
+Start the frontend and backend in development mode:
+
+```bash
 npm run dev
+```
+
+Build the workspaces:
+
+```bash
 npm run build
 ```
 
-Demo login:
+## Notes
 
-- Email: `admin@bakha.kz`
-- Password: `admin123`
+Configure environment variables locally before running the application. Do not commit `.env` files, API tokens, passwords, or production credentials.
 
-Default URLs:
+## Author
 
-- Web: `http://localhost:5173`
-- API: `http://localhost:4000`
-
-## WAPPI / WhatsApp env
-
-By default real sending is blocked.
-
-```bash
-WAPPI_ENABLED=false
-WAPPI_DRY_RUN=true
-WAPPI_API_BASE_URL=
-WAPPI_TOKEN=
-WAPPI_PROFILE_ID=
-WAPPI_WEBHOOK_SECRET=
-```
+GitHub: [@Mechtateel](https://github.com/Mechtateel)
